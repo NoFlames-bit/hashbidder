@@ -29,9 +29,11 @@ func planBurnRate(plan ReconciliationPlan) SatsBurnRate {
 	total := ZeroBurnRate()
 	oneDay := 24 * time.Hour
 	for _, c := range plan.Creates {
-		speedEHPerDay := c.Config.SpeedLimit.To(EH, Day).Value
+		// Keep time units consistent: (EH/s) * (sat/EH/day) = sat/day.
+		// Using EH/day here would multiply by 86_400 twice and inflate burn rate.
+		speedEHPerSecond := c.Config.SpeedLimit.To(EH, Second).Value
 		priceSatPerEHDay := decimal.NewFromInt(int64(c.Config.Price.To(EH, Day).Sats))
-		br, _ := NewSatsBurnRate(speedEHPerDay.Mul(priceSatPerEHDay), oneDay)
+		br, _ := NewSatsBurnRate(speedEHPerSecond.Mul(priceSatPerEHDay), oneDay)
 		total = total.Add(br)
 	}
 	return total

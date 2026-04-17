@@ -119,9 +119,9 @@ func TestReconcile_InsufficientAborts(t *testing.T) {
 
 func TestReconcile_LowStillExecutes(t *testing.T) {
 	c := testutil.NewFakeClient(
-		testutil.WithAccountBalance(braiins.AccountBalance{AvailableSat: 9_000_000 * 71, BlockedSat: 0, TotalSat: 9_000_000 * 71}),
+		testutil.WithAccountBalance(braiins.AccountBalance{AvailableSat: 500_000, BlockedSat: 0, TotalSat: 500_000}),
 	)
-	cfg := testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, testhelpers.MakeBidConfig(500, "5.0"))
+	cfg := testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, testhelpers.MakeBidConfig(20_000, "10.0"))
 	res, err := Reconcile(c, cfg, false, noSleep)
 	if err != nil {
 		t.Fatal(err)
