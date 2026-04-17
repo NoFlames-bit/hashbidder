@@ -24,6 +24,7 @@ import (
 var (
 	verbose bool
 	logFile string
+	dryRun  bool
 )
 
 func setupLogging() {
@@ -99,6 +100,7 @@ func rootCmd() *cobra.Command {
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable debug logging")
 	root.PersistentFlags().StringVar(&logFile, "log-file", "", "Also log to this file")
+	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "For set-bids: print what would change without executing")
 
 	ping := &cobra.Command{
 		Use:   "ping",
@@ -190,7 +192,6 @@ func rootCmd() *cobra.Command {
 		Short: "Reconcile bids to a TOML config",
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bidConfig, _ := cmd.Flags().GetString("bid-config")
-			dryRun, _ := cmd.Flags().GetBool("dry-run")
 			confAny, err := cfg.LoadConfig(bidConfig)
 			if err != nil {
 				return err
@@ -238,7 +239,6 @@ func rootCmd() *cobra.Command {
 	}
 	setBids.Flags().String("bid-config", "", "Path to the TOML bid config file")
 	_ = setBids.MarkFlagRequired("bid-config")
-	setBids.Flags().Bool("dry-run", false, "Print what would change without executing")
 
 	root.AddCommand(ping, bids, hashvalue, oceanStats, setBids)
 	return root
