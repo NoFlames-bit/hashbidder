@@ -1,0 +1,6 @@
+[project]
+name = "hashbidder-go"
+version = "0.0.1"
+description = "hashbidder automates bidding for hash from Braiins hashpower marketplace"
+readme = "README.md"
+requires-go = ">=1.26"
