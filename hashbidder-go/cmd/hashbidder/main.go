@@ -47,6 +47,21 @@ func setupLogging() {
 	slog.SetDefault(slog.New(&teeHandler{stderr: std, file: file}))
 }
 
+func logInvocation() {
+	if logFile == "" {
+		return
+	}
+	// Emit a startup marker when file logging is enabled so each run is traceable.
+	slog.Info("hashbidder run", "argv", strings.Join(os.Args[1:], " "))
+}
+
+func printResult(msg string) {
+	fmt.Println(msg)
+	if logFile != "" {
+		slog.Info("hashbidder result", "output", msg)
+	}
+}
+
 type teeHandler struct {
 	stderr slog.Handler
 	file   slog.Handler
@@ -95,6 +110,7 @@ func rootCmd() *cobra.Command {
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			_ = godotenv.Load()
 			setupLogging()
+			logInvocation()
 		},
 	}
 
@@ -112,7 +128,7 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			slog.Debug("order book", "bids", len(book.Bids), "asks", len(book.Asks))
-			fmt.Printf("OK — order book: %d bids, %d asks\n", len(book.Bids), len(book.Asks))
+			printResult(fmt.Sprintf("OK — order book: %d bids, %d asks", len(book.Bids), len(book.Asks)))
 			return nil
 		},
 	}
@@ -127,7 +143,7 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			if len(cur) == 0 {
-				fmt.Println("No active bids.")
+				printResult("No active bids.")
 				return nil
 			}
 			for _, bid := range cur {
@@ -140,8 +156,8 @@ func rootCmd() *cobra.Command {
 				if bid.Progress != nil {
 					prog = bid.Progress.String()
 				}
-				fmt.Printf("%s  %14s  price=%s  limit=%s  remaining=%s sat  progress=%s\n",
-					bid.ID, bid.Status, price.String(), bid.SpeedLimitPH.String(), rem, prog)
+				printResult(fmt.Sprintf("%s  %14s  price=%s  limit=%s  remaining=%s sat  progress=%s",
+					bid.ID, bid.Status, price.String(), bid.SpeedLimitPH.String(), rem, prog))
 			}
 			return nil
 		},
@@ -157,9 +173,9 @@ func rootCmd() *cobra.Command {
 				return err
 			}
 			if verbose {
-				fmt.Println(formatter.FormatHashvalueVerbose(comp, mempoolBase()))
+				printResult(formatter.FormatHashvalueVerbose(comp, mempoolBase()))
 			} else {
-				fmt.Println(formatter.FormatHashvalue(comp))
+				printResult(formatter.FormatHashvalue(comp))
 			}
 			return nil
 		},
@@ -182,7 +198,7 @@ func rootCmd() *cobra.Command {
 			if err != nil {
 				return err
 			}
-			fmt.Println(formatter.FormatOceanStats(stats, addr))
+			printResult(formatter.FormatOceanStats(stats, addr))
 			return nil
 		},
 	}
@@ -214,9 +230,9 @@ func rootCmd() *cobra.Command {
 					return err
 				}
 				if verbose {
-					fmt.Println(formatter.FormatSetBidsTargetResultVerbose(res))
+					printResult(formatter.FormatSetBidsTargetResultVerbose(res))
 				} else {
-					fmt.Println(formatter.FormatSetBidsTargetResult(res))
+					printResult(formatter.FormatSetBidsTargetResult(res))
 				}
 				if res.SetBidsResult.BalanceCheck.Status == domain.BalanceInsufficient {
 					os.Exit(1)
@@ -227,7 +243,7 @@ func rootCmd() *cobra.Command {
 				if err != nil {
 					return err
 				}
-				fmt.Println(formatter.FormatSetBidsResult(res))
+				printResult(formatter.FormatSetBidsResult(res))
 				if res.BalanceCheck.Status == domain.BalanceInsufficient {
 					os.Exit(1)
 				}
