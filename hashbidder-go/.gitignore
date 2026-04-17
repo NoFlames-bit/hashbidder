@@ -1,0 +1,3 @@
+.golangci-cache/
+bin/
+vendor/
