@@ -1,3 +1,5 @@
 .golangci-cache/
 bin/
 vendor/
+coverage.out
+
