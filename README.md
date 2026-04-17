@@ -1,55 +1,63 @@
 # hashbidder
 
-hashbidder is a small tool to manage bidding in [Braiins Hashpower](https://academy.braiins.com/en/braiins-hashpower/about/) market automatically. You declare a config file and hashbidder uses [Hashpower's API](https://hashpower.braiins.com/api/) to align your open bids with it.
+hashbidder is a small CLI that reconciles your bids on the [Braiins Hashpower](https://academy.braiins.com/en/braiins-hashpower/about/) spot market with a TOML config file. It calls the [Hashpower API](https://hashpower.braiins.com/api/) to read the order book, compare it to what you want, and create, edit, or cancel bids as needed.
+
+For layers, data flow, and design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
 ## Disclaimers
 
-hashbidder is severely under-tested and most probably has bugs. If used against the actual Braiins Hashpower market, it's going to use your money in a real market, and thus you can end up spending money in a way you don't want. You use hashbidder under at your own risk.
+hashbidder is lightly tested and may contain defects. If you aim it at the live Braiins Hashpower market, it spends real funds in a real order book, so you can lose money or lock hashrate in ways you did not intend. **You use hashbidder at your own risk.**
 
-hashbidder is currently overfit for someone who is mining at [OCEAN Pool](https://ocean.xyz/) running their own [DATUM gateway](https://github.com/OCEAN-xyz/datum_gateway). If your profile is different, parts of this tool might be awkward or not useful at all.
+The tool is oriented toward miners on [OCEAN](https://ocean.xyz/) who run their own [DATUM gateway](https://github.com/OCEAN-xyz/datum_gateway). Other setups may still work, but some features (especially target-hashrate mode) assume that profile.
 
 ## Prerequisites
 
-You will need `uv` installed: https://docs.astral.sh/uv/getting-started/installation/
+- **Python 3.13+** (see `requires-python` in `pyproject.toml`).
+- **[uv](https://docs.astral.sh/uv/getting-started/installation/)** for running the CLI and dev tasks.
 
 ## Configuration
 
-### API Key
+### Environment variables
 
-Copy the example env file and fill in your Braiins API key:
+Copy the example file and edit values as needed:
 
 ```sh
 cp .env.example .env
 ```
 
-The API key is required for authenticated commands (e.g. `bids`). Public commands like `ping` work without it.
+| Variable | Required for | Notes |
+|----------|----------------|-------|
+| `BRAIINS_API_KEY` | `bids`, `set-bids` | Omit or use a read-only key for read-only API access. Use an **owner** key if you want hashbidder to place or change bids. |
+| `OCEAN_ADDRESS` | `set-bids` in **target-hashrate** mode, `ocean-account-stats` | Your Bitcoin payout address as seen by OCEAN (used to pull 24h hashrate). |
+| `MEMPOOL_URL` | Optional | Base URL for the Mempool instance used by `hashvalue` (see `.env.example` for a default). |
 
-Braiins provides two API keys: a read only one and an owner one. If you want hashbidder to be able to do bidding for you, you must provide the owner one. If you set the read only key, only read only commands will work.
+`ping` and `hashvalue` do not require a Braiins API key.
 
-### OCEAN Bitcoin address
+### Bid config file (`set-bids`)
 
-`target-hashrate` mode additionally requires you to set your `OCEAN_ADDRESS` in `.env`. This is needed to fetch your last 24 hours hashrate, compare it to the target hashrate as per your config and adjust your bids accordingly.
+`set-bids` reads a TOML file. Two modes are supported:
 
-### Bid config file
+1. **Explicit bids** — you list each desired bid. Omit `mode`, or set `mode = "explicit-bids"`.
+2. **Target hashrate** — you set a goal hashrate; hashbidder plans bids from the live book and your OCEAN stats. Set `mode = "target-hashrate"`.
 
-`set-bids` command needs a TOML formatted config file. The command supports conig files for two modes: `manual` (declare exact bids) and `target-hashrate` (declare a target, let hashbidder plan bids against the live orderbook). You can find examples below. I recommend you start copying one of them and tinker from there.
+Start from one of the examples below and adjust.
 
-#### Manual mode
+#### Explicit bids
 
-Each `[[bids]]` entry becomes one bid on the marketplace. Prices must be multiples of the market tick size (currently 1000 sat/EH/Day).
+Each `[[bids]]` table describes one desired bid. Prices in the file are **sat per PH per day** (`price_sat_per_ph_day`). The exchange enforces a **minimum tick in sat per EH per day**; values you enter must align to that grid when converted (see `PriceTick` in the codebase). The live tick size is also returned from Braiins settings (commonly 1000 sat/EH/Day).
 
 ```toml
-# Sats deposited per bid. If you will run this frequently, you can set small values here.
+# Collateral per new bid (sat). If you run reconciliation often, smaller amounts may be enough.
 default_amount_sat = 100000
 
-# Where purchased hashrate is pointed.
+# Where purchased hashrate is delivered (your stratum endpoint and worker name).
 [upstream]
 url = "stratum+tcp://203.0.113.10:23334"
-identity = "brains.worker"
+identity = "rig.worker"
 
 [[bids]]
-price_sat_per_ph_day = 45000   # price you're willing to pay
-speed_limit_ph_s = 1.0         # max hashrate for this bid
+price_sat_per_ph_day = 45000   # max price you are willing to pay (sat/PH/Day)
+speed_limit_ph_s = 1.0         # cap on hashrate for this bid (PH/s)
 
 [[bids]]
 price_sat_per_ph_day = 46000
@@ -58,90 +66,102 @@ speed_limit_ph_s = 1.0
 [[bids]]
 price_sat_per_ph_day = 46000
 speed_limit_ph_s = 2.0
-
-# You can set as many bids as you want
 ```
 
-#### Target-hashrate mode
+#### Target hashrate mode
 
-Declare a target hashrate and a max number of bids. hashbidder reads your current 24h Ocean hashrate, computes how much more it needs, picks a price by undercutting the cheapest served bid on the orderbook by one tick, and splits the needed hashrate across up to `max_bids_count` bids. Per-bid price/speed cooldowns are respected.
+Declare a target **PH/s** and a maximum number of parallel bids. hashbidder reads your rolling OCEAN hashrate, derives how much more capacity you need, chooses a price by undercutting the cheapest filled bid on the book by one tick (see Braiins docs on [cooldowns / overbid](https://academy.braiins.com/en/braiins-hashpower/faqs/trading/?Pages_en%5Bquery%5D=cooldow#what-is-the-overbid-feature)), and splits the remainder across up to `max_bids_count` bids while respecting per-bid cooldown rules.
 
 ```toml
 mode = "target-hashrate"
 
-# Orders will be created with this budget. If you'll be running hashbidder frequently,
-# since any order that gets completed will be quickly replaced by a new one.
+# Collateral per new bid (sat). Filled orders are replaced on the next run if the planner still needs capacity.
 default_amount_sat = 100000
 
-# Your goal
 target_hashrate_ph_s = 5.0
 
-# How many bids you want to place in parallel at most. Why have multiple? Multiple 
-# bids let hashbidder better deal with Braiins cooldown periods (see https://academy.braiins.com/en/braiins-hashpower/faqs/trading/?Pages_en%5Bquery%5D=cooldow#what-is-the-overbid-feature)
-# If you will run this every 10 minutes, I would suggest to start with 5. If you will run less frequently, you can get away with less.
+# Parallel bids give the planner room to work around Braiins cooldowns. If you run every ~10 minutes, try starting around 5; less frequent runs may need fewer slots.
 max_bids_count = 5
 
 [upstream]
 url = "stratum+tcp://203.0.113.10:23334"
-identity = "brains.worker"
+identity = "rig.worker"
 ```
 
-## How to use
+Target mode does **not** allow `[[bids]]` sections in the same file.
 
-Run commands via `uv run`:
+## Usage
+
+From the repository root:
 
 ```sh
 uv run hashbidder --help
 ```
 
-`uv` will automatically create a virtual environment and install dependencies on first run.
+On first run, `uv` creates a virtual environment and installs dependencies.
+
+### Global options
+
+- **`-v` / `--verbose`** — debug logging; for `set-bids` in target-hashrate mode, also prints planner detail (price scan, distribution, cooldown status).
+- **`--log-file PATH`** — append the same logs to a file.
 
 ## Commands
 
+Illustrative output only; real numbers depend on the market and your account.
+
 ```sh
-# Simply fetch orderbook to verify market is reachable
+# Public order book (no API key required)
 $ uv run hashbidder ping
 OK — order book: 70 bids, 8 asks
 
-# Print your current bids
+# List your active bids (requires owner or read-capable key as appropriate)
 $ uv run hashbidder bids
-B123456789        ACTIVE  price=500 sat/1 EH/Day  limit=5.0 PH/Second  ...
+B123456789          ACTIVE  price=500 sat/PH/Day  limit=5.0 PH/Second  remaining=100000 sat  progress=0.42
 
-# Compute the current hashvalue from on-chain data
+# Implied hashprice from chain data via Mempool (no Braiins key)
 $ uv run hashbidder hashvalue
 Hashvalue: 45469 sat/PH/Day
 
-# Reconcile your open bids with a config file.
-# --dry-run shows what would change without touching anything.
+# OCEAN hashrate windows for OCEAN_ADDRESS (debugging / before target-hashrate)
+$ uv run hashbidder ocean-account-stats
+Ocean stats for bc1qxy2k…
+
+    24 hrs    4.12 PH/s
+     3 hrs    4.08 PH/s
+    10 min    4.15 PH/s
+
+# Reconcile open bids to the config; --dry-run prints the plan only.
 $ uv run hashbidder set-bids --bid-config bids.toml --dry-run
+=== Account Balance ===
+  Available:  1,500,000 sat
+  Required:   200,000 sat
+  Burn rate:  12,345 sat/hour
+  Runway:     121.5h
+  Status:     SUFFICIENT
+
 === Changes ===
 CREATE:
   price:       46001 sat/PH/Day
   speed_limit: 1.0 PH/s
   amount:      100000 sat
-  upstream:    stratum+tcp://203.0.113.10:23334 / brains.worker
+  upstream:    stratum+tcp://203.0.113.10:23334 / rig.worker
 
 === Expected Final State ===
 BID  price=46001 sat/PH/Day  limit=1.0 PH/s  amount=100000 sat  (NEW)
 
-# Without --dry-run, changes are applied for real.
+# Without --dry-run, the plan is executed.
 $ uv run hashbidder set-bids --bid-config bids.toml
-=== Executing Changes ===
-CREATE 46001 sat/PH/Day 1.0 PH/s... OK → B987654321
-
-=== Results ===
-1 succeeded, 0 failed
-
-=== Current Bids ===
-B987654321  price=46001 sat/PH/Day  limit=1.0 PH/s  amount=100000 sat  ACTIVE
+...
 ```
 
-Use `-v` for debug logging or `--log-file path` to log to a file. For `set-bids` in target-hashrate mode, `-v` also prints a full planner trace (price scan, distribution math, cooldown decisions).
+If the **account balance** check fails (insufficient sats to fund planned creates), `set-bids` prints the plan, aborts execution, and exits with status **1**. The same exit code applies when target-hashrate mode cannot proceed after that check.
 
-## Tests
+## Development
 
 ```sh
-make check    # format + lint + typecheck + test
-make test     # tests only
+git clone https://github.com/NoFlames-bit/hashbidder.git
+cd hashbidder
+uv sync --all-groups   # optional: dev dependencies for tests and lint
+make check             # format, lint, typecheck, import contracts, tests
+make test              # pytest only
 ```
-
