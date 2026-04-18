@@ -15,6 +15,7 @@ import (
 type FakeClient struct {
 	Orderbook      braiins.OrderBook
 	Bids           []domain.UserBid
+	BidHistories   map[domain.BidID]domain.BidHistory
 	NextID         int
 	Errors         map[string][]*braiins.APIError // key: "method:id"
 	MarketSettings braiins.MarketSettings
@@ -74,6 +75,16 @@ func WithAccountBalance(b braiins.AccountBalance) FakeOption {
 	return func(c *FakeClient) { c.AccountBalance = b }
 }
 
+// WithBidHistory registers the response for GetBidHistory(id).
+func WithBidHistory(id domain.BidID, h domain.BidHistory) FakeOption {
+	return func(c *FakeClient) {
+		if c.BidHistories == nil {
+			c.BidHistories = map[domain.BidID]domain.BidHistory{}
+		}
+		c.BidHistories[id] = h
+	}
+}
+
 func (c *FakeClient) errKey(method, id string) string {
 	return method + ":" + id
 }
@@ -110,6 +121,21 @@ func (c *FakeClient) GetCurrentBids() ([]domain.UserBid, error) {
 	out := make([]domain.UserBid, len(c.Bids))
 	copy(out, c.Bids)
 	return out, nil
+}
+
+func (c *FakeClient) GetBidHistory(id domain.BidID) (domain.BidHistory, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.record("get_bid_history", string(id))
+	if err := c.maybeRaise("get_bid_history", string(id)); err != nil {
+		return domain.BidHistory{}, err
+	}
+	if c.BidHistories != nil {
+		if h, ok := c.BidHistories[id]; ok {
+			return h, nil
+		}
+	}
+	return domain.NewBidHistory(nil), nil
 }
 
 func (c *FakeClient) CreateBid(up domain.Upstream, amount domain.Sats, price domain.HashratePrice, speed domain.Hashrate, cl braiins.ClOrderID) (braiins.CreateBidResult, error) {

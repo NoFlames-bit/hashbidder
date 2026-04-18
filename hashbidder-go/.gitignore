@@ -6,7 +6,6 @@ coverage.out
 bids.*toml
 
 /.cursor/
-/*
 /ARCHITECTURE.md
 /README.md
-!hashbidder-go/
+

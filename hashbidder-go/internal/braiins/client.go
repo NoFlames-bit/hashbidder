@@ -57,6 +57,7 @@ type CreateBidResult struct {
 type HashpowerClient interface {
 	GetOrderbook() (OrderBook, error)
 	GetCurrentBids() ([]domain.UserBid, error)
+	GetBidHistory(id domain.BidID) (domain.BidHistory, error)
 	CreateBid(up domain.Upstream, amount domain.Sats, price domain.HashratePrice, speed domain.Hashrate, cl ClOrderID) (CreateBidResult, error)
 	EditBid(id domain.BidID, newPrice domain.HashratePrice, newSpeed domain.Hashrate) error
 	CancelBid(id domain.BidID) error
@@ -246,6 +247,60 @@ func (c *Client) GetCurrentBids() ([]domain.UserBid, error) {
 		out = append(out, ub)
 	}
 	return out, nil
+}
+
+func (c *Client) GetBidHistory(id domain.BidID) (domain.BidHistory, error) {
+	h, err := c.authHeaders()
+	if err != nil {
+		return domain.BidHistory{}, err
+	}
+	u := fmt.Sprintf("%s/spot/bid/detail/%s", c.BaseURL, url.PathEscape(string(id)))
+	req, _ := http.NewRequest(http.MethodGet, u, nil)
+	req.Header = h
+	resp, err := c.HTTP.Do(req)
+	if err != nil {
+		return domain.BidHistory{}, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	b, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return domain.BidHistory{}, c.raiseAPIError(resp, b)
+	}
+	var data struct {
+		History []map[string]any `json:"history"`
+	}
+	dec := json.NewDecoder(bytes.NewReader(b))
+	dec.UseNumber()
+	if err := dec.Decode(&data); err != nil {
+		return domain.BidHistory{}, err
+	}
+	entries := make([]domain.BidHistoryEntry, 0, len(data.History))
+	for _, item := range data.History {
+		tsStr := bidMapString(item, "timestamp")
+		lu, err := time.Parse(time.RFC3339Nano, tsStr)
+		if err != nil {
+			lu, err = time.Parse(time.RFC3339, tsStr)
+			if err != nil {
+				return domain.BidHistory{}, fmt.Errorf("bid history timestamp: %w", err)
+			}
+		}
+		ps, err := decFromAny(item["price_sat"])
+		if err != nil {
+			return domain.BidHistory{}, fmt.Errorf("bid history price_sat: %w", err)
+		}
+		price, _ := domain.NewHashratePrice(domain.Sats(ps.IntPart()), mustHR(decimal.NewFromInt(1), domain.EH, domain.Day))
+		sl, err := decFromAny(item["speed_limit_ph"])
+		if err != nil {
+			return domain.BidHistory{}, fmt.Errorf("bid history speed_limit_ph: %w", err)
+		}
+		speed, _ := domain.NewHashrate(sl, domain.PH, domain.Second)
+		entries = append(entries, domain.BidHistoryEntry{
+			Timestamp:    lu,
+			Price:        price,
+			SpeedLimitPH: speed,
+		})
+	}
+	return domain.NewBidHistory(entries), nil
 }
 
 func bidMapString(m map[string]any, key string) string {

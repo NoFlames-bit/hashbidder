@@ -127,3 +127,40 @@ func TestGetCurrentBids_JSONNumberIDStratumSSL(t *testing.T) {
 		t.Fatalf("scheme=%q", bids[0].Upstream.URL.Scheme())
 	}
 }
+
+func TestGetBidHistory_JSON(t *testing.T) {
+	const payload = `{"history":[{"timestamp":"2026-04-17T08:00:00Z","price_sat":"500000","speed_limit_ph":"10"},{"timestamp":"2026-04-17T07:00:00Z","price_sat":"600000","speed_limit_ph":"5"}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spot/bid/detail/B42" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	key := "k"
+	c := NewClient(srv.URL, &key, srv.Client())
+	h, err := c.GetBidHistory("B42")
+	if err != nil {
+		t.Fatal(err)
+	}
+	entries := h.Entries()
+	if len(entries) != 2 {
+		t.Fatalf("len=%d", len(entries))
+	}
+	if entries[0].Price.Sats != 500_000 || !entries[0].SpeedLimitPH.Value.Equal(decimal.RequireFromString("10")) {
+		t.Fatalf("newest entry %+v", entries[0])
+	}
+	if entries[1].Price.Sats != 600_000 {
+		t.Fatalf("older entry %+v", entries[1])
+	}
+	if got := h.LastPriceDecreaseAt(); got == nil || !got.Equal(entries[0].Timestamp) {
+		t.Fatalf("last price decrease %v", got)
+	}
+	if h.LastSpeedDecreaseAt() != nil {
+		t.Fatalf("expected no speed decrease, got %v", h.LastSpeedDecreaseAt())
+	}
+}

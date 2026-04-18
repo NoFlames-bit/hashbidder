@@ -55,11 +55,11 @@ type DeferredCreate struct {
 }
 
 type ReconciliationPlan struct {
-	Edits            []EditAction
-	Creates          []CreateAction
-	Cancels          []CancelAction
-	Unchanged        []UnchangedBid
-	DeferredCreates  []DeferredCreate
+	Edits           []EditAction
+	Creates         []CreateAction
+	Cancels         []CancelAction
+	Unchanged       []UnchangedBid
+	DeferredCreates []DeferredCreate
 }
 
 func fieldDiffCount(bid UserBid, cfg BidConfig) int {

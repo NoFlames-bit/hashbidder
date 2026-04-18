@@ -56,7 +56,10 @@ func SetBidsTarget(
 	if err != nil {
 		return formatter.SetBidsTargetResult{}, err
 	}
-	annotated := targethr.CheckCooldowns(current, settings, now)
+	annotated, err := targethr.ResolveCooldowns(client, current, settings, now)
+	if err != nil {
+		return formatter.SetBidsTargetResult{}, err
+	}
 	bids := targethr.PlanWithCooldowns(price, needed, conf.MaxBidsCount, annotated)
 	for _, entry := range bids {
 		if err := settings.PriceTick.AssertAligned(entry.Price); err != nil {

@@ -2,6 +2,7 @@ package targethr
 
 import (
 	"errors"
+	"fmt"
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
@@ -29,17 +30,62 @@ type BidWithCooldown struct {
 	Cooldown CooldownInfo
 }
 
-func CheckCooldowns(bids []domain.UserBid, settings braiins.MarketSettings, now time.Time) []BidWithCooldown {
+// IsPriceGuaranteedFree reports whether the bid's price is provably past its
+// decrease window using only LastUpdated (any user update bumps it). False
+// means "unknown" and may require bid history.
+func IsPriceGuaranteedFree(bid domain.UserBid, settings braiins.MarketSettings, now time.Time) bool {
+	return now.Sub(bid.LastUpdated) >= settings.MinBidPriceDecreasePeriod
+}
+
+// IsSpeedGuaranteedFree reports whether the bid's speed limit is provably
+// past its decrease window using only LastUpdated.
+func IsSpeedGuaranteedFree(bid domain.UserBid, settings braiins.MarketSettings, now time.Time) bool {
+	return now.Sub(bid.LastUpdated) >= settings.MinBidSpeedLimitDecreasePeriod
+}
+
+// CooldownFromHistory derives per-field cooldown flags from bid history and
+// market decrease windows. A flag is true iff the last strict decrease of that
+// field occurred within its cooldown period.
+func CooldownFromHistory(history domain.BidHistory, settings braiins.MarketSettings, now time.Time) CooldownInfo {
+	lastPrice := history.LastPriceDecreaseAt()
+	lastSpeed := history.LastSpeedDecreaseAt()
+	priceCD := lastPrice != nil && now.Sub(*lastPrice) < settings.MinBidPriceDecreasePeriod
+	speedCD := lastSpeed != nil && now.Sub(*lastSpeed) < settings.MinBidSpeedLimitDecreasePeriod
+	return CooldownInfo{PriceCooldown: priceCD, SpeedCooldown: speedCD}
+}
+
+// ResolveCooldowns annotates each bid with cooldown state: tier-1 predicates
+// skip history when both fields are provably free; otherwise fetches bid
+// history. On *braiins.APIError from history, uses a conservative fallback
+// (each field in cooldown unless its tier-1 predicate proved it free). Other
+// errors are returned.
+func ResolveCooldowns(client braiins.HashpowerClient, bids []domain.UserBid, settings braiins.MarketSettings, now time.Time) ([]BidWithCooldown, error) {
 	out := make([]BidWithCooldown, 0, len(bids))
 	for _, bid := range bids {
-		priceCD := now.Sub(bid.LastUpdated) < settings.MinBidPriceDecreasePeriod
-		speedCD := now.Sub(bid.LastUpdated) < settings.MinBidSpeedLimitDecreasePeriod
-		out = append(out, BidWithCooldown{
-			Bid:      bid,
-			Cooldown: CooldownInfo{PriceCooldown: priceCD, SpeedCooldown: speedCD},
-		})
+		priceFree := IsPriceGuaranteedFree(bid, settings, now)
+		speedFree := IsSpeedGuaranteedFree(bid, settings, now)
+		var cd CooldownInfo
+		if priceFree && speedFree {
+			cd = CooldownInfo{}
+		} else {
+			history, err := client.GetBidHistory(bid.ID)
+			if err != nil {
+				var apiErr *braiins.APIError
+				if errors.As(err, &apiErr) {
+					cd = CooldownInfo{
+						PriceCooldown: !priceFree,
+						SpeedCooldown: !speedFree,
+					}
+				} else {
+					return nil, fmt.Errorf("get bid history %s: %w", bid.ID, err)
+				}
+			} else {
+				cd = CooldownFromHistory(history, settings, now)
+			}
+		}
+		out = append(out, BidWithCooldown{Bid: bid, Cooldown: cd})
 	}
-	return out
+	return out, nil
 }
 
 func PlanWithCooldowns(desiredPrice domain.HashratePrice, needed domain.Hashrate, maxBids int, bids []BidWithCooldown) []domain.BidConfig {

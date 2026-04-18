@@ -89,6 +89,7 @@ Responsibilities:
 
 - **Money and units:** `Sats`, `Hashrate`, `HashratePrice`, hash/time units, `PriceTick`, `SatsBurnRate`.
 - **Market concepts:** `Upstream`, `StratumUrl`, bid config types, `UserBid`, statuses, `Progress`.
+- **Bid timeline:** `BidHistory` / `BidHistoryEntry` — normalised newest-first history from the bid-detail API; strict price/speed decrease timestamps for cooldown logic.
 - **Pure planning:** `PlanBidChanges` — same greedy matching rules as Python: effective upstream (host:port + trimmed identity; scheme-insensitive), cancels/edits/creates/unchanged, upstream mismatch → cancel + create, sibling retention for identities not listed when `[[bids]]` is non-empty, full cancel when there are no bid rows.
 - **Risk gate:** `CheckBalance` — create collateral vs available balance; LOW runway vs SUFFICIENT / INSUFFICIENT (aligned with Python thresholds).
 - **Bitcoin helpers:** subsidy, constants used by hashvalue paths.
@@ -114,7 +115,7 @@ Reconciliation engine for explicit (or computed) `domain.SetBidsConfig`:
 
 ### Clients
 
-- **`internal/braiins`** — Hashpower v1 base URL; JSON ↔ domain; `APIError` with `IsTransient()`; implements `HashpowerClient` for production and tests.
+- **`internal/braiins`** — Hashpower v1 base URL; JSON ↔ domain; `APIError` with `IsTransient()`; implements `HashpowerClient` for production and tests (including `GetBidHistory` → `GET /spot/bid/detail/{id}`).
 - **`internal/mempool`** — default base `DefaultMempoolURL`; two-call consistent tip for chain stats (same idea as Python).
 - **`internal/ocean`** — fetches HTML and regex-parses the stats table; same fragility contract as Python.
 
@@ -137,7 +138,7 @@ String builders for CLI output (plans, execution, hashvalue verbose, OCEAN stats
 
 ### Target hashrate (`internal/targethr/`)
 
-Planning for target mode: need from rolling 24h average, distribution across bid slots, cooldown-aware field locks, market price scan (undercut cheapest **served** bid by one tick). Uses Braiins order-book and settings shapes from `braiins` (same coupling idea as Python’s `target_hashrate` ↔ client types).
+Planning for target mode: need from rolling 24h average, distribution across bid slots, cooldown-aware field locks, market price scan (undercut cheapest **served** bid by one tick). Cooldowns use **tier-1** predicates on `UserBid.LastUpdated` when both fields are provably past their decrease windows; otherwise **`GetBidHistory`** plus `domain.BidHistory` for authoritative per-field flags, with a conservative fallback on `*APIError` from history (matches Python PR #17). Uses Braiins order-book and settings shapes from `braiins` (same coupling idea as Python’s `target_hashrate` ↔ client types).
 
 ### Hashvalue (`internal/hv/` + use case)
 

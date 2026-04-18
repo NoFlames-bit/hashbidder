@@ -6,6 +6,7 @@ import (
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/domain"
+	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/testutil"
 
 	"github.com/shopspring/decimal"
 )
@@ -157,20 +158,78 @@ func TestFindMarketPrice(t *testing.T) {
 	}
 }
 
-func TestCheckCooldowns(t *testing.T) {
+func TestResolveCooldowns_tier1SkipsHistory(t *testing.T) {
 	tick, _ := domain.NewPriceTick(1000)
 	settings := braiins.MarketSettings{
 		MinBidPriceDecreasePeriod:      time.Minute,
 		MinBidSpeedLimitDecreasePeriod: 2 * time.Minute,
 		PriceTick:                      tick,
 	}
-	bid := domain.UserBid{LastUpdated: time.Unix(1000, 0).UTC()}
-	now := bid.LastUpdated.Add(30 * time.Second)
-	out := CheckCooldowns([]domain.UserBid{bid}, settings, now)
+	now := time.Unix(10_000, 0).UTC()
+	bid := domain.UserBid{ID: "BX", LastUpdated: now.Add(-5 * time.Minute)}
+	c := testutil.NewFakeClient(testutil.WithCurrentBids(bid))
+	out, err := ResolveCooldowns(c, []domain.UserBid{bid}, settings, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Cooldown.PriceCooldown || out[0].Cooldown.SpeedCooldown {
+		t.Fatalf("got %+v", out[0])
+	}
+	for _, call := range c.Calls {
+		if len(call) > 0 && call[0] == "get_bid_history" {
+			t.Fatalf("unexpected history fetch: %v", c.Calls)
+		}
+	}
+}
+
+func TestResolveCooldowns_historyAuthoritative(t *testing.T) {
+	tick, _ := domain.NewPriceTick(1000)
+	settings := braiins.MarketSettings{
+		MinBidPriceDecreasePeriod:      time.Hour,
+		MinBidSpeedLimitDecreasePeriod: time.Hour,
+		PriceTick:                      tick,
+	}
+	now := time.Date(2026, 4, 17, 9, 0, 0, 0, time.UTC)
+	bid := domain.UserBid{ID: "H1", LastUpdated: now.Add(-time.Minute)}
+	// Recent update → tier-1 does not clear; empty history → no decreases → both cooldown false.
+	c := testutil.NewFakeClient(
+		testutil.WithCurrentBids(bid),
+		testutil.WithBidHistory("H1", domain.NewBidHistory(nil)),
+	)
+	out, err := ResolveCooldowns(c, []domain.UserBid{bid}, settings, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(out) != 1 || out[0].Cooldown.PriceCooldown || out[0].Cooldown.SpeedCooldown {
+		t.Fatalf("got %+v", out[0].Cooldown)
+	}
+}
+
+func TestResolveCooldowns_apiErrorConservativeFallback(t *testing.T) {
+	tick, _ := domain.NewPriceTick(1000)
+	settings := braiins.MarketSettings{
+		MinBidPriceDecreasePeriod:      2 * time.Minute,
+		MinBidSpeedLimitDecreasePeriod: time.Minute,
+		PriceTick:                      tick,
+	}
+	now := time.Unix(1000, 0).UTC()
+	bid := domain.UserBid{ID: "B1", LastUpdated: now.Add(-90 * time.Second)}
+	errs := map[string][]*braiins.APIError{
+		"get_bid_history:B1": {{StatusCode: 404, Message: "not found"}},
+	}
+	c := testutil.NewFakeClient(
+		testutil.WithCurrentBids(bid),
+		testutil.WithErrors(errs),
+	)
+	out, err := ResolveCooldowns(c, []domain.UserBid{bid}, settings, now)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(out) != 1 {
 		t.Fatalf("len=%d", len(out))
 	}
-	if !out[0].Cooldown.PriceCooldown || !out[0].Cooldown.SpeedCooldown {
-		t.Fatalf("expected both cooldowns %+v", out[0].Cooldown)
+	// price_free false → conservative true; speed_free true → conservative false.
+	if !out[0].Cooldown.PriceCooldown || out[0].Cooldown.SpeedCooldown {
+		t.Fatalf("got %+v", out[0].Cooldown)
 	}
 }

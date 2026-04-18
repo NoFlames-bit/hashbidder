@@ -103,7 +103,7 @@ Use the exact header `[[bids]]` (all lowercase) for every worker row. Mixed spel
 
 #### Target hashrate mode
 
-Declare a target **PH/s** and a maximum number of parallel bids. The tool reads your rolling OCEAN hashrate, derives how much more capacity you need, chooses a price by undercutting the cheapest filled bid on the book by one tick (see Braiins docs on [cooldowns / overbid](https://academy.braiins.com/en/braiins-hashpower/faqs/trading/?Pages_en%5Bquery%5D=cooldow#what-is-the-overbid-feature)), and splits the remainder across up to `max_bids_count` bids while respecting per-bid cooldown rules.
+Declare a target **PH/s** and a maximum number of parallel bids. The tool reads your rolling OCEAN hashrate, derives how much more capacity you need, chooses a price by undercutting the cheapest filled bid on the book by one tick (see Braiins docs on [cooldowns / overbid](https://academy.braiins.com/en/braiins-hashpower/faqs/trading/?Pages_en%5Bquery%5D=cooldow#what-is-the-overbid-feature)), and splits the remainder across up to `max_bids_count` bids while respecting per-bid cooldown rules. Cooldown detection follows the same model as the Python CLI: cheap **tier-1** checks from `last_updated` and market decrease periods when they prove both price and speed are free of a decrease window; otherwise it fetches **`/spot/bid/detail`** history, derives separate price vs speed cooldown from that timeline, and uses a conservative estimate if the history call returns an API error.
 
 ```toml
 mode = "target-hashrate"
