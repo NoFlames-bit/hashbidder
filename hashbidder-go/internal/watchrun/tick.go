@@ -2,7 +2,9 @@ package watchrun
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
@@ -39,6 +41,7 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 	nextBids := make([]domain.BidConfig, len(wm.SetBids.Bids))
 	copy(nextBids, wm.SetBids.Bids)
 	changed := false
+	var priceAdjParts []string
 	for i := range nextBids {
 		rule := wm.Rules[i]
 		if rule.Strategy == cfg.StrategyNone {
@@ -73,8 +76,20 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 			continue
 		}
 		if wireSats(np) != wireSats(nextBids[i].Price) {
+			oldP := nextBids[i].Price
 			nextBids[i].Price = np
 			changed = true
+			slot := domain.EffectiveUpstream(wm.SetBids, wm.SetBids.Bids[i])
+			id := strings.TrimSpace(wm.SetBids.Bids[i].Identity)
+			if id == "" {
+				id = strings.TrimSpace(slot.Identity)
+			}
+			if id == "" {
+				id = string(ub.ID)
+			}
+			oldS := int64(oldP.To(domain.PH, domain.Day).Sats)
+			newS := int64(np.To(domain.PH, domain.Day).Sats)
+			priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s %d→%d sat/PH/day", id, oldS, newS))
 		}
 	}
 	if !changed {
@@ -90,6 +105,10 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 	if err != nil {
 		return err
 	}
-	slog.Info("watch tick: reconciled", "dry_run", dryRun)
+	msg := "watch tick: reconciled"
+	if len(priceAdjParts) > 0 {
+		msg += " (" + strings.Join(priceAdjParts, "; ") + ")"
+	}
+	slog.Info(msg, "dry_run", dryRun)
 	return nil
 }
