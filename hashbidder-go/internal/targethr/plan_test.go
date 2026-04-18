@@ -1,6 +1,8 @@
 package targethr
 
 import (
+	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -231,5 +233,28 @@ func TestResolveCooldowns_apiErrorConservativeFallback(t *testing.T) {
 	// price_free false → conservative true; speed_free true → conservative false.
 	if !out[0].Cooldown.PriceCooldown || out[0].Cooldown.SpeedCooldown {
 		t.Fatalf("got %+v", out[0].Cooldown)
+	}
+}
+
+func TestResolveCooldowns_propagatesNonAPIHistoryError(t *testing.T) {
+	tick, _ := domain.NewPriceTick(1000)
+	settings := braiins.MarketSettings{
+		MinBidPriceDecreasePeriod:      time.Hour,
+		MinBidSpeedLimitDecreasePeriod: time.Hour,
+		PriceTick:                      tick,
+	}
+	now := time.Unix(2000, 0).UTC()
+	bid := domain.UserBid{ID: "Z1", LastUpdated: now.Add(-time.Minute)}
+	stubErr := fmt.Errorf("connection reset")
+	c := testutil.NewFakeClient(
+		testutil.WithCurrentBids(bid),
+		testutil.WithGetBidHistoryError(stubErr),
+	)
+	_, err := ResolveCooldowns(c, []domain.UserBid{bid}, settings, now)
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if !errors.Is(err, stubErr) {
+		t.Fatalf("got %v want %v", err, stubErr)
 	}
 }

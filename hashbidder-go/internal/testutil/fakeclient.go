@@ -25,6 +25,10 @@ type FakeClient struct {
 	FailFirstCreate bool
 	createFailOnce  bool
 
+	// GetBidHistoryStubErr, if non-nil, is returned from GetBidHistory after
+	// maybeRaise (for tests that need a non-APIError failure path).
+	GetBidHistoryStubErr error
+
 	mu sync.Mutex
 }
 
@@ -85,6 +89,11 @@ func WithBidHistory(id domain.BidID, h domain.BidHistory) FakeOption {
 	}
 }
 
+// WithGetBidHistoryError makes GetBidHistory return err (after maybeRaise) for any id.
+func WithGetBidHistoryError(err error) FakeOption {
+	return func(c *FakeClient) { c.GetBidHistoryStubErr = err }
+}
+
 func (c *FakeClient) errKey(method, id string) string {
 	return method + ":" + id
 }
@@ -129,6 +138,9 @@ func (c *FakeClient) GetBidHistory(id domain.BidID) (domain.BidHistory, error) {
 	c.record("get_bid_history", string(id))
 	if err := c.maybeRaise("get_bid_history", string(id)); err != nil {
 		return domain.BidHistory{}, err
+	}
+	if c.GetBidHistoryStubErr != nil {
+		return domain.BidHistory{}, c.GetBidHistoryStubErr
 	}
 	if c.BidHistories != nil {
 		if h, ok := c.BidHistories[id]; ok {

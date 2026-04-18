@@ -2,6 +2,7 @@ package braiins
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -194,5 +195,44 @@ func TestGetBidHistory_pathEscapesSpecialBidID(t *testing.T) {
 	}
 	if len(h.Entries()) != 1 {
 		t.Fatalf("entries=%v", h.Entries())
+	}
+}
+
+func TestGetBidHistory_returnsAPIErrorOn404(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "gone", http.StatusNotFound)
+	}))
+	defer srv.Close()
+
+	key := "k"
+	c := NewClient(srv.URL, &key, srv.Client())
+	_, err := c.GetBidHistory("missing-bid")
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) || apiErr.StatusCode != http.StatusNotFound {
+		t.Fatalf("got %T %#v", err, err)
+	}
+}
+
+func TestGetBidHistory_emptyHistory(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spot/bid/detail/B0" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"history":[]}`))
+	}))
+	defer srv.Close()
+
+	key := "k"
+	c := NewClient(srv.URL, &key, srv.Client())
+	h, err := c.GetBidHistory("B0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(h.Entries()) != 0 || h.LastPriceDecreaseAt() != nil || h.LastSpeedDecreaseAt() != nil {
+		t.Fatalf("got entries=%d", len(h.Entries()))
 	}
 }
