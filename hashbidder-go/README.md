@@ -15,6 +15,8 @@ The tool is oriented toward miners on [OCEAN](https://ocean.xyz/) who run their 
 - **Go 1.26+** (see `go.mod` and `goproject.toml`).
 - Optional: **golangci-lint** for `make lint` / `make check`.
 
+This directory includes **`go.work`** with `use .` so the Go command and **gopls** treat this folder as a workspace module even when your editor opens a **parent** directory (no `go.work` at the repository root).
+
 ## Build
 
 From this directory (the folder that contains `go.mod`):
@@ -61,24 +63,22 @@ Each `[[bids]]` table describes one desired bid. Prices in the file are **sat pe
 
 ```toml
 # Collateral per new bid (sat). If you run reconciliation often, smaller amounts may be enough.
-default_amount_sat = 100000
+default_amount_sat = 44000
 
 # Where purchased hashrate is delivered (your stratum endpoint and worker name).
+
 [upstream]
-url = "stratum+tcp://203.0.113.10:23334"
-identity = "rig.worker"
+url = "stratum+tcp://YOUR_GATEWAY_HOST:23334"
 
 [[bids]]
-price_sat_per_ph_day = 45000   # max price you are willing to pay (sat/PH/Day)
-speed_limit_ph_s = 1.0         # cap on hashrate for this bid (PH/s)
-
-[[bids]]
-price_sat_per_ph_day = 46000
+identity = "YOUR_PAYOUT_ADDRESS.worker1"
+price_sat_per_ph_day = 47017
 speed_limit_ph_s = 1.0
 
 [[bids]]
-price_sat_per_ph_day = 46000
-speed_limit_ph_s = 2.0
+identity = "YOUR_PAYOUT_ADDRESS.worker2"
+price_sat_per_ph_day = 46786
+speed_limit_ph_s = 1.0
 ```
 
 #### One stratum URL, multiple workers

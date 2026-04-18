@@ -22,7 +22,7 @@ This document describes how the **Go** code is organized, how data flows through
 | HTTP | `net/http` — `Client` with **10s** timeout constructed in `cmd/hashbidder` |
 | Env | [godotenv](https://github.com/joho/godotenv) — `.env` loaded in `PersistentPreRun` |
 | Config | [go-toml v2](https://github.com/pelletier/go-toml) + `shopspring/decimal` for numeric TOML fields |
-| Module | `go.mod` in this directory; build via `go build ./cmd/hashbidder` or `make build` |
+| Module | `go.mod` in this directory; **`go.work`** with `use .` anchors the toolchain here when the editor workspace is wider; build via `go build ./cmd/hashbidder` or `make build` |
 | Quality | `go fmt`, `go vet`, **golangci-lint** (`make lint`), `go test` (`Makefile` targets including race + coverage) |
 
 ---
