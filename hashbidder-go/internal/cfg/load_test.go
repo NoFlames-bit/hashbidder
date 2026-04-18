@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/domain"
 )
@@ -356,6 +357,67 @@ url = "stratum+tcp://pool.example.com:3333"
 `)
 	_, err := LoadConfig(p)
 	if err == nil || !strings.Contains(err.Error(), "target-hashrate") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoadConfig_WatchModeExplicit(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "w.toml", `
+default_amount_sat = 100000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "w1"
+
+[watch]
+enabled = true
+interval_seconds = 60
+jitter_seconds = 5
+initial_delay_seconds = 1
+
+[[bids]]
+price_sat_per_ph_day = 500000
+speed_limit_ph_s = 5.0
+watch_strategy = "served_floor_band"
+price_min_sat_per_ph_day = 400000
+price_max_sat_per_ph_day = 600000
+max_ticks_per_step = 2
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm, ok := any.(WatchModeConfig)
+	if !ok {
+		t.Fatalf("got %T", any)
+	}
+	if wm.Loop.Interval != 60*time.Second || wm.Loop.Jitter != 5*time.Second {
+		t.Fatalf("loop %+v", wm.Loop)
+	}
+	if len(wm.Rules) != 1 || wm.Rules[0].Strategy != StrategyServedFloorBand || wm.Rules[0].MaxTicksPerStep != 2 {
+		t.Fatalf("rules %+v", wm.Rules)
+	}
+}
+
+func TestLoadConfig_WatchNotAllowedWithTarget(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "bad.toml", `
+mode = "target-hashrate"
+default_amount_sat = 100000
+target_hashrate_ph_s = 10.0
+max_bids_count = 3
+
+[watch]
+enabled = true
+interval_seconds = 60
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "w1"
+`)
+	_, err := LoadConfig(p)
+	if err == nil || !strings.Contains(err.Error(), "[watch]") {
 		t.Fatalf("err=%v", err)
 	}
 }

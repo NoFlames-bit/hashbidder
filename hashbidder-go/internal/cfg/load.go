@@ -41,9 +41,13 @@ type rawUpstream struct {
 }
 
 type rawBid struct {
-	PriceSatPerPHDay any    `toml:"price_sat_per_ph_day"`
-	SpeedLimitPHS    any    `toml:"speed_limit_ph_s"`
-	Identity         string `toml:"identity"`
+	PriceSatPerPHDay    any     `toml:"price_sat_per_ph_day"`
+	SpeedLimitPHS       any     `toml:"speed_limit_ph_s"`
+	Identity            string  `toml:"identity"`
+	WatchStrategy       *string `toml:"watch_strategy"`
+	PriceMinSatPerPHDay any     `toml:"price_min_sat_per_ph_day"`
+	PriceMaxSatPerPHDay any     `toml:"price_max_sat_per_ph_day"`
+	MaxTicksPerStep     any     `toml:"max_ticks_per_step"`
 }
 
 type rawFile struct {
@@ -53,6 +57,7 @@ type rawFile struct {
 	Bids              []rawBid    `toml:"bids"`
 	TargetHashratePHS any         `toml:"target_hashrate_ph_s"`
 	MaxBidsCount      any         `toml:"max_bids_count"`
+	Watch             *rawWatch   `toml:"watch"`
 }
 
 func parseIntField(label string, v any) (int64, error) {
@@ -62,6 +67,8 @@ func parseIntField(label string, v any) (int64, error) {
 	case int:
 		return int64(x), nil
 	case uint64:
+		return int64(x), nil
+	case float64:
 		return int64(x), nil
 	default:
 		if label == "" {
@@ -125,6 +132,9 @@ func LoadConfig(path string) (any, error) {
 	def := domain.Sats(defAmt)
 
 	if mode == TargetHashrate {
+		if data.Watch != nil && data.Watch.Enabled {
+			return nil, fmt.Errorf("[watch] is not supported in target-hashrate mode")
+		}
 		if upIdentity == "" {
 			return nil, fmt.Errorf("missing required upstream field: identity (required for target-hashrate mode)")
 		}
@@ -200,11 +210,19 @@ func LoadConfig(path string) (any, error) {
 		}
 	}
 	up := domain.Upstream{URL: su, Identity: upIdentity}
-	return domain.SetBidsConfig{
+	setBids := domain.SetBidsConfig{
 		DefaultAmount: def,
 		Upstream:      up,
 		Bids:          bids,
-	}, nil
+	}
+	wm, err := parseWatchMode(&data, setBids, bids)
+	if err != nil {
+		return nil, err
+	}
+	if wm != nil {
+		return *wm, nil
+	}
+	return setBids, nil
 }
 
 func mustHR(v decimal.Decimal, hu domain.HashUnit, tu domain.TimeUnit) domain.Hashrate {

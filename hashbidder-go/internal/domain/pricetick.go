@@ -37,6 +37,15 @@ func (t PriceTick) AlignDown(price HashratePrice) HashratePrice {
 	return HashratePrice{Sats: Sats(aligned), Per: per}
 }
 
+// AlignUp returns the smallest tick-aligned EH/Day price not below price (ceil on the tick grid).
+func (t PriceTick) AlignUp(price HashratePrice) HashratePrice {
+	wire := int64(price.To(EH, Day).Sats)
+	ts := int64(t.Sats)
+	aligned := (wire + ts - 1) / ts * ts
+	per, _ := NewHashrate(decimal.NewFromInt(1), EH, Day)
+	return HashratePrice{Sats: Sats(aligned), Per: per}
+}
+
 func (t PriceTick) AddOne(price HashratePrice) (HashratePrice, error) {
 	if err := t.AssertAligned(price); err != nil {
 		return HashratePrice{}, err

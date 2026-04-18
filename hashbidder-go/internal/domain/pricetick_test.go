@@ -91,3 +91,13 @@ func TestPriceTickAddOne(t *testing.T) {
 		t.Fatal("expected error")
 	}
 }
+
+func TestPriceTickAlignUp(t *testing.T) {
+	tick := mustTick(1000)
+	if int64(tick.AlignUp(mustEHDay(46350000)).Sats) != 46350000 {
+		t.Fatalf("got %d", tick.AlignUp(mustEHDay(46350000)).Sats)
+	}
+	if int64(tick.AlignUp(mustEHDay(46350001)).Sats) != 46351000 {
+		t.Fatalf("got %d", tick.AlignUp(mustEHDay(46350001)).Sats)
+	}
+}

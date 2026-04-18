@@ -45,6 +45,7 @@ flowchart TB
     ocean_uc[GetOceanAccountStats]
     sb_uc[SetBids]
     sbt_uc[SetBidsTarget]
+    watch_uc["watch command → `internal/watchrun` → SetBids"]
   end
 
   subgraph infra["Infrastructure"]
@@ -70,6 +71,7 @@ flowchart TB
   usecases --> Mempool
   usecases --> Ocean
   sb_uc --> Runner
+  watch_uc --> Runner
   sbt_uc --> Target
   sbt_uc --> Runner
   Runner --> Planner
@@ -121,15 +123,16 @@ Reconciliation engine for explicit (or computed) `domain.SetBidsConfig`:
 
 ### Config loading (`internal/cfg/`)
 
-Parses TOML into either `domain.SetBidsConfig` (explicit / default mode) or `cfg.TargetHashrateConfig`. Validates upstream URL, amounts, and mode-specific rules (e.g. `[upstream].identity` required in target mode; per-row `identity` rules in explicit mode).
+Parses TOML into **`domain.SetBidsConfig`** (explicit / default), **`cfg.TargetHashrateConfig`**, or **`cfg.WatchModeConfig`** when **`[watch].enabled = true`** on an explicit-bids file (timer automation: loop settings + per-row `BidWatchRule` values). Validates upstream URL, amounts, and mode-specific rules (e.g. `[upstream].identity` required in target mode; per-row `identity` rules in explicit mode; **`[watch]`** is rejected together with target-hashrate mode).
 
 **Header normalization:** before decode, every root-level **`[[…bids…]]`** array-of-tables header is rewritten to **`[[bids]]`**. This avoids go-toml collapsing mixed-case bid tables into a single row.
 
 ### CLI (`cmd/hashbidder/main.go`)
 
 - Loads `.env`, configures **slog** (stderr; optional tee to `--log-file`).
-- **Commands:** `ping`, `bids`, `hashvalue`, `ocean-account-stats`, `set-bids --bid-config`.
-- **`set-bids`:** `cfg.LoadConfig`; branch on `TargetHashrateConfig` vs `domain.SetBidsConfig`; target mode requires **`OCEAN_ADDRESS`**. Exits **1** if post-run balance status is insufficient (matches Python).
+- **Commands:** `ping`, `bids`, `hashvalue`, `ocean-account-stats`, `set-bids --bid-config`, **`watch --bid-config`**.
+- **`set-bids`:** `cfg.LoadConfig`; branch on `WatchModeConfig` (error: use `watch`) vs `TargetHashrateConfig` vs `domain.SetBidsConfig`; target mode requires **`OCEAN_ADDRESS`**. Exits **1** if post-run balance status is insufficient (matches Python).
+- **`watch`:** same loader; requires `WatchModeConfig`. Runs **`internal/watchrun`** until SIGINT/SIGTERM: sleep (`interval_seconds` + optional jitter), optional per-row price strategy, then **`usecase.SetBids`** (same reconcile as one-shot). Global **`--dry-run`** applies each tick.
 - **Verbose:** debug logs; target mode also prints planner detail via `formatter` verbose helpers.
 
 ### Presentation (`internal/formatter/`)
@@ -139,6 +142,10 @@ String builders for CLI output (plans, execution, hashvalue verbose, OCEAN stats
 ### Target hashrate (`internal/targethr/`)
 
 Planning for target mode: need from rolling 24h average, distribution across bid slots, cooldown-aware field locks, market price scan (undercut cheapest **served** bid by one tick). Cooldowns use **tier-1** predicates on `UserBid.LastUpdated` when both fields are provably past their decrease windows; otherwise **`GetBidHistory`** plus `domain.BidHistory` for authoritative per-field flags, with a conservative fallback on `*APIError` from history (matches Python PR #17). Uses Braiins order-book and settings shapes from `braiins` (same coupling idea as Python’s `target_hashrate` ↔ client types).
+
+### Watch loop (`internal/watchrun/`)
+
+Optional **explicit-bids** automation: **`ResolveCooldowns`** each tick (order book + settings + bid history), **`served_floor_band`** strategy adjusts selected rows’ desired prices toward the served-stack undercut clamped to per-row min/max, then **`usecase.SetBids`**. Not a daemon inside `bidrunner`; it is a separate command and package so CLI and cron-style wrappers stay thin.
 
 ### Hashvalue (`internal/hv/` + use case)
 
@@ -154,7 +161,7 @@ Computes expected sats per PH per day from mempool chain stats and domain subsid
 | `MEMPOOL_URL` | Optional mempool API base override |
 | `OCEAN_ADDRESS` | Payout address for OCEAN stats and target-hashrate mode |
 
-Flags: `--bid-config` for `set-bids`; global `-v`, `--log-file`, `--dry-run`.
+Flags: `--bid-config` for `set-bids` and **`watch`**; global `-v`, `--log-file`, `--dry-run`.
 
 ---
 
@@ -168,6 +175,7 @@ Flags: `--bid-config` for `set-bids`; global `-v`, `--log-file`, `--dry-run`.
 | `ocean-account-stats` | — | — | HTML stats |
 | `set-bids` (explicit) | full reconcile | — | — |
 | `set-bids` (target) | reconcile + settings + order book | — | 24h hashrate |
+| `watch` | reconcile + settings + order book each tick; bid detail when cooldowns need history | — | — |
 
 ---
 
@@ -189,7 +197,7 @@ Go does not use import-linter-style contracts; discipline is **package boundarie
 
 - **Test doubles:** `braiins.HashpowerClient` and fakes in `internal/testutil` / tests.
 - **New commands:** add Cobra `RunE`, optional new `internal/usecase` func, reuse clients.
-- **New config modes:** extend `cfg.LoadConfig` and wire a branch in `set-bids` that still produces `domain.SetBidsConfig` for `bidrunner.Reconcile` when possible.
+- **New config modes:** extend `cfg.LoadConfig` / `WatchModeConfig` and strategies under `internal/watchrun/`, or add branches in `set-bids` / `watch` as needed.
 
 ---
 
@@ -213,10 +221,12 @@ Go does not use import-linter-style contracts; discipline is **package boundarie
 | `internal/braiins/` | Braiins HTTP + `HashpowerClient` |
 | `internal/cfg/` | TOML → configs |
 | `internal/targethr/` | Target-mode planning |
+| `internal/watchrun/` | `watch` command: timer loop, strategies, per-tick reconcile |
 | `internal/hv/` | On-chain hashvalue math |
 | `internal/mempool/`, `internal/ocean/` | Secondary HTTP |
 | `internal/formatter/` | Human-readable output |
 | `Makefile` | build, test, lint, check |
 | `bids.multiple-workers.example.toml` | Example: one `[upstream].url`, per-row `identity=` |
+| `bids.watch.example.toml` | Example: `[watch]` + per-row `watch_strategy` for `hashbidder watch` |
 
 This should be enough to trace any Go CLI behavior from `cmd/` down to HTTP or pure `domain` code.

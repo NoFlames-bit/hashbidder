@@ -6,7 +6,9 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
@@ -16,6 +18,7 @@ import (
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/mempool"
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/ocean"
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/usecase"
+	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/watchrun"
 
 	"github.com/joho/godotenv"
 	"github.com/spf13/cobra"
@@ -107,6 +110,17 @@ func rootCmd() *cobra.Command {
 	root := &cobra.Command{
 		Use:   "hashbidder",
 		Short: "Braiins Hashpower spot bid helper (Go port)",
+		Long: `hashbidder talks to Braiins Hashpower (and optionally OCEAN / mempool) to inspect or reconcile spot bids.
+
+Commands:
+  ping                 Connectivity check (order book)
+  bids                 List current bids
+  hashvalue            Expected sat/PH/Day from chain data
+  ocean-account-stats  OCEAN pool HTML stats (needs OCEAN_ADDRESS)
+  set-bids             One-shot reconcile from TOML (explicit bids or target-hashrate mode)
+  watch                Long-running reconcile loop from TOML (explicit bids + [watch] section)
+
+Global flags apply to all commands. Use "hashbidder <command> --help" for command-specific flags.`,
 		PersistentPreRun: func(cmd *cobra.Command, args []string) {
 			_ = godotenv.Load()
 			setupLogging()
@@ -116,7 +130,7 @@ func rootCmd() *cobra.Command {
 
 	root.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable debug logging")
 	root.PersistentFlags().StringVar(&logFile, "log-file", "", "Also log to this file")
-	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "For set-bids: print what would change without executing")
+	root.PersistentFlags().BoolVar(&dryRun, "dry-run", false, "For set-bids and watch: plan each reconcile without cancel/edit/create (reads still run; target/watch may call bid-detail history)")
 
 	ping := &cobra.Command{
 		Use:   "ping",
@@ -205,7 +219,18 @@ func rootCmd() *cobra.Command {
 
 	setBids := &cobra.Command{
 		Use:   "set-bids",
-		Short: "Reconcile bids to a TOML config",
+		Short: "One-shot reconcile bids from a TOML config",
+		Long: `Load --bid-config and run a single reconciliation pass.
+
+Config modes (see README):
+  • Explicit bids — default; list desired price/speed per [[bids]] row.
+  • Target hashrate — mode = "target-hashrate"; plans bids from OCEAN + order book + cooldowns.
+
+If the file contains [watch].enabled = true (timer automation for explicit bids), use
+  hashbidder watch --bid-config <same file>
+instead; set-bids will refuse that shape so one-shot and loop modes stay distinct.
+
+Requires --bid-config. Uses global --dry-run, -v, --log-file.`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			bidConfig, _ := cmd.Flags().GetString("bid-config")
 			confAny, err := cfg.LoadConfig(bidConfig)
@@ -216,6 +241,8 @@ func rootCmd() *cobra.Command {
 			oc := ocean.NewClient(ocean.DefaultOceanURL, httpClient())
 
 			switch v := confAny.(type) {
+			case cfg.WatchModeConfig:
+				return fmt.Errorf("config has [watch].enabled = true: use `hashbidder watch --bid-config %s` for the timer loop, or set watch.enabled = false for one-shot set-bids", bidConfig)
 			case cfg.TargetHashrateConfig:
 				addrStr := strings.TrimSpace(os.Getenv("OCEAN_ADDRESS"))
 				if addrStr == "" {
@@ -253,10 +280,48 @@ func rootCmd() *cobra.Command {
 			}
 		},
 	}
-	setBids.Flags().String("bid-config", "", "Path to the TOML bid config file")
+	setBids.Flags().String("bid-config", "", "Path to TOML (explicit bids or target-hashrate; not [watch].enabled)")
 	_ = setBids.MarkFlagRequired("bid-config")
 
-	root.AddCommand(ping, bids, hashvalue, oceanStats, setBids)
+	watch := &cobra.Command{
+		Use:   "watch",
+		Short: "Timer-driven bid reconciliation (explicit TOML + [watch] section)",
+		Long: `Run until SIGINT or SIGTERM: sleep between ticks, then re-read the order book and
+adjust per-row prices when watch_strategy is set, then reconcile (same engine as set-bids).
+
+Requirements:
+  • TOML must be explicit bids (no mode = "target-hashrate").
+  • Root table [watch] with enabled = true (interval_seconds, optional jitter_seconds, initial_delay_seconds).
+  • At least one [[bids]] row with watch_strategy (e.g. served_floor_band) and price_min / price_max sat/PH/day.
+
+Optional rows omit watch_strategy — they keep the static price from the file.
+
+Examples:
+  hashbidder watch --bid-config bids.watch.example.toml --dry-run
+  hashbidder watch --bid-config bids.toml -v
+
+See README "Watch mode" and bids.watch.example.toml for all TOML keys.`,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			bidConfig, _ := cmd.Flags().GetString("bid-config")
+			confAny, err := cfg.LoadConfig(bidConfig)
+			if err != nil {
+				return err
+			}
+			wm, ok := confAny.(cfg.WatchModeConfig)
+			if !ok {
+				return fmt.Errorf("watch requires explicit bids plus [watch].enabled = true in %q (got %T)", bidConfig, confAny)
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			c := braiins.NewClient(braiins.APIBase, braiinsKey(), httpClient())
+			slog.Info("watch: started", "config", bidConfig, "dry_run", dryRun)
+			return watchrun.Run(ctx, c, &wm, dryRun)
+		},
+	}
+	watch.Flags().String("bid-config", "", "Path to TOML with [watch].enabled and explicit [[bids]]")
+	_ = watch.MarkFlagRequired("bid-config")
+
+	root.AddCommand(ping, bids, hashvalue, oceanStats, setBids, watch)
 	return root
 }
 

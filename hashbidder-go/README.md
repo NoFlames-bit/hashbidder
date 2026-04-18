@@ -44,18 +44,19 @@ cp .env.example .env
 
 | Variable | Required for | Notes |
 |----------|----------------|-------|
-| `BRAIINS_API_KEY` | `bids`, `set-bids` | Omit or use a read-only key for read-only API access. Use an **owner** key to place or change bids. |
+| `BRAIINS_API_KEY` | `bids`, `set-bids`, `watch` | Omit or use a read-only key for read-only API access. Use an **owner** key to place or change bids. `watch` may call `GET /spot/bid/detail/{id}` on ticks for rows with automation; confirm your key can read bid history if you rely on that path. |
 | `OCEAN_ADDRESS` | `set-bids` in **target-hashrate** mode, `ocean-account-stats` | Your Bitcoin payout address as seen by OCEAN (used to pull 24h hashrate). |
 | `MEMPOOL_URL` | Optional | Base URL for the Mempool instance used by `hashvalue` (see `.env.example` for a default). |
 
 `ping` and `hashvalue` do not require a Braiins API key.
 
-### Bid config file (`set-bids`)
+### Bid config file (`set-bids` / `watch`)
 
-`set-bids` reads a TOML file. Two modes are supported:
+`set-bids` and `watch` read the same TOML shape for **explicit** bids. Supported modes:
 
 1. **Explicit bids** — you list each desired bid. Omit `mode`, or set `mode = "explicit-bids"`.
-2. **Target hashrate** — you set a goal hashrate; the tool plans bids from the live book and your OCEAN stats. Set `mode = "target-hashrate"`.
+2. **Target hashrate** — you set a goal hashrate; the tool plans bids from the live book and your OCEAN stats. Set `mode = "target-hashrate"`. (**`set-bids` only** — `watch` does not support this mode.)
+3. **Watch (timer loop)** — optional `[watch]` table with `enabled = true` plus per-row `watch_strategy` fields. Loads the same explicit `[[bids]]` file but **`set-bids` exits with an error** telling you to run **`hashbidder watch`** instead, so one-shot and long-running paths do not collide.
 
 #### Explicit bids
 
@@ -91,6 +92,32 @@ Each Braiins order delivers hashrate to a **dest_upstream**: the same stratum **
 Copy and edit the checked-in example: [bids.multiple-workers.example.toml](bids.multiple-workers.example.toml).
 
 Use the exact header `[[bids]]` (all lowercase) for every worker row. Mixed spellings such as `[[Bids]]` are normalized when the file is loaded so each table stays a distinct row.
+
+#### Watch mode (`hashbidder watch`)
+
+When **`[watch].enabled = true`**, the config is intended for **`hashbidder watch --bid-config FILE`**, which runs until you send **SIGINT** or **SIGTERM**. Between ticks it sleeps for **`interval_seconds`** plus a random **0…`jitter_seconds`**, then may adjust prices for rows that set **`watch_strategy`**, then calls the same reconcile path as **`set-bids`**.
+
+**Root `[watch]` keys**
+
+| Key | Required | Description |
+|-----|----------|-------------|
+| `enabled` | yes | Must be `true` for watch mode (otherwise the file loads as plain explicit bids for `set-bids`). |
+| `interval_seconds` | yes | Base seconds between ticks (minimum **15**). |
+| `jitter_seconds` | no | Adds random **0…jitter_seconds** each wait to desynchronize periodic runs (default **0**). |
+| `initial_delay_seconds` | no | Seconds to wait before the first tick (default **0**). |
+
+**Per `[[bids]]` keys** (optional; omit `watch_strategy` to keep that row’s price fixed at `price_sat_per_ph_day`)
+
+| Key | When | Description |
+|-----|------|-------------|
+| `watch_strategy` | optional | `served_floor_band` moves the **live** bid price toward the served-book undercut (same idea as target mode), clamped to **`price_min_sat_per_ph_day`** … **`price_max_sat_per_ph_day`** (both **sat/PH/day**). Empty or omitted = no automation for that worker. |
+| `price_min_sat_per_ph_day` | with `served_floor_band` | Floor (sat/PH/day). |
+| `price_max_sat_per_ph_day` | with `served_floor_band` | Ceiling (sat/PH/day). |
+| `max_ticks_per_step` | optional | Max tick steps toward the goal per tick (**1**–**50**, default **1**). |
+
+`[watch]` cannot be combined with **`mode = "target-hashrate"`** (the loader rejects it).
+
+Full example: [bids.watch.example.toml](bids.watch.example.toml).
 
 #### How `set-bids` reconciles open bids (operating model)
 
@@ -141,7 +168,7 @@ go run ./cmd/hashbidder --help
 
 - **`-v` / `--verbose`** — debug logging; for `set-bids` in target-hashrate mode, also prints planner detail.
 - **`--log-file PATH`** — tee logs to a file (with a short startup marker when set).
-- **`--dry-run`** — for `set-bids`, print the plan only (no API mutations except reads).
+- **`--dry-run`** — for **`set-bids`** and **`watch`**, each reconcile pass prints the plan only (no cancel/edit/create). Reads still run (order book, bids, settings, balance; target mode and automated `watch` rows may also call **bid-detail history** for cooldown-aware decreases).
 
 ## Commands
 
@@ -153,9 +180,12 @@ Illustrative output only; real numbers depend on the market and your account.
 ./bin/hashbidder hashvalue
 ./bin/hashbidder ocean-account-stats
 ./bin/hashbidder set-bids --bid-config bids.toml --dry-run
+./bin/hashbidder watch --bid-config bids.watch.example.toml --dry-run
 ```
 
-If the account balance check fails after planning, `set-bids` exits with status **1** (explicit and target paths).
+Use **`hashbidder --help`** and **`hashbidder watch --help`** for full flag text.
+
+If the account balance check fails after planning, **`set-bids`** exits with status **1** (explicit and target paths). **`watch`** uses the same reconcile engine each tick but does **not** exit the process on insufficient balance; reconcile is skipped for that tick when balance blocks mutations (same as when `--dry-run` is set). Transport or loader errors on a tick are logged and the loop continues.
 
 ## Development
 
