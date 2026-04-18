@@ -4,6 +4,8 @@ hashbidder is a small CLI that reconciles your bids on the [Braiins Hashpower](h
 
 For layers, data flow, and design decisions, see [ARCHITECTURE.md](ARCHITECTURE.md).
 
+The **Go port** in [`hashbidder-go/`](hashbidder-go/) has its own [README](hashbidder-go/README.md) (build, env, usage) and [ARCHITECTURE.md](hashbidder-go/ARCHITECTURE.md) (packages, data flow, enforcement).
+
 ## Disclaimers
 
 hashbidder is lightly tested and may contain defects. If you aim it at the live Braiins Hashpower market, it spends real funds in a real order book, so you can lose money or lock hashrate in ways you did not intend. **You use hashbidder at your own risk.**
@@ -67,6 +69,28 @@ speed_limit_ph_s = 1.0
 price_sat_per_ph_day = 46000
 speed_limit_ph_s = 2.0
 ```
+
+#### One stratum URL, multiple workers
+
+Each Braiins order delivers hashrate to a **dest_upstream**: the same stratum **host and port** as your `[upstream].url`, plus a **worker identity** string. If you run several workers through one DATUM gateway, you usually want **one `[upstream].url`** and a **different `identity=` on each `[[bids]]` row** so each row lines up with `dest_upstream.identity` from the API.
+
+- You may **omit `[upstream].identity`** when **every** `[[bids]]` row sets **`identity=`** (per-row delivery worker).
+- If **`[upstream].identity`** is set, it is the **default** for rows that omit `identity=`.
+
+Copy and edit the checked-in example: [`hashbidder-go/bids.multiple-workers.example.toml`](hashbidder-go/bids.multiple-workers.example.toml).
+
+Use the exact header `[[bids]]` (all lowercase) for every worker row. Mixed spellings such as `[[Bids]]` are normalized when the file is loaded, but they used to collapse or drop rows depending on the parser, which made price edits on a “missing” worker look like a no-op.
+
+#### How `set-bids` reconciles open bids (operating model)
+
+These rules apply to both the **Python CLI** (`uv run hashbidder`) and the **Go port** (`hashbidder-go`).
+
+- **Effective upstream** — A config row’s delivery target is `[upstream].url` plus either that row’s `identity=` or, if empty, `[upstream].identity`. Matching compares **trimmed** identity strings and the stratum **host:port** only (**`stratum+tcp` vs `stratum+ssl` does not matter** for “same pool”).
+- **Greedy matching** — Each `[[bids]]` row is paired with at most one manageable live bid (same effective upstream), preferring the fewest price/speed field differences, then higher remaining collateral.
+- **Surplus orders you still declare** — If your file lists an identity more than once (duplicate rows) or there are extra live bids for an identity that appears in the file but no row consumed them, those extras are **canceled** as unmatched managed workers.
+- **Sibling workers not in the file** — Manageable live bids on the **same** stratum URL as `[upstream]` whose identity **does not** appear on any `[[bids]]` line are **left alone**, so you can add workers incrementally without canceling unrelated orders.
+- **Upstream mismatch** — Changing stratum URL or identity on an existing order is not an in-place edit on Braiins; the plan uses **cancel + create**.
+- **Empty desired state** — A file with **`default_amount_sat` and `[upstream]` but no `[[bids]]` tables** means “cancel every manageable bid.” **`[upstream].identity` may be omitted** in that case. As soon as you add **`[[bids]]` rows** without a default `[upstream].identity`, **each row must set `identity=`**.
 
 #### Target hashrate mode
 

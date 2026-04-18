@@ -2,7 +2,9 @@
 
 hashbidder is a **Python 3.13+** command-line tool that talks to **Braiins Hashpower** (spot market), **mempool.space-compatible** APIs (on-chain stats), and **OCEAN** (pool hashrate HTML). It reconciles live spot bids with a TOML config—either **explicit bid rows** or a **target hashrate** mode that plans bids from the order book and OCEAN’s 24h average.
 
-This document describes how the code is layered, how data flows through the main commands, and the design constraints enforced in the repo.
+A **Go port** lives under [`hashbidder-go/`](hashbidder-go/). It follows the same external behavior (TOML, reconciliation rules, Braiins/mempool/OCEAN integration) but is a separate codebase. For packages, commands, and Go-specific tooling, see **[`hashbidder-go/ARCHITECTURE.md`](hashbidder-go/ARCHITECTURE.md)**.
+
+This document describes how the **Python** code is layered, how data flows through the main commands, and the design constraints enforced in the repo.
 
 ---
 
@@ -89,7 +91,7 @@ Responsibilities:
 
 - **Money and units:** `Sats`, `Hashrate`, `HashratePrice`, `HashUnit`, `TimeUnit`, `PriceTick`, `SatsBurnRate`.
 - **Market concepts:** `Upstream`, `StratumUrl`, `BidConfig`, `SetBidsConfig`, `UserBid`, `BidStatus`, `Progress`.
-- **Pure planning:** `bid_planning.plan_bid_changes` — greedy matching of live bids to config slots, emitting **cancels**, **edits**, **creates**, and **unchanged**; upstream mismatch → cancel + create (upstream cannot be edited in place).
+- **Pure planning:** `bid_planning.plan_bid_changes` — greedy matching of live bids to config slots by **effective upstream** (same stratum **host:port** as `[upstream]`, ignoring `stratum+tcp` vs `stratum+ssl`, plus **trimmed** identity: per-row `identity=` or default `[upstream].identity`). Emits **cancels**, **edits**, **creates**, and **unchanged**; upstream mismatch → cancel + create (Braiins cannot repoint URL/identity in place). With a **non-empty** `[[bids]]` list, manageable bids on the same URL whose identity is **not** listed in the file are **retained** (incremental workers); surplus bids for **listed** identities are canceled. With **no** `[[bids]]` rows, every manageable bid is canceled (full cleanup).
 - **Risk gate:** `balance_check.check_balance` — sums create `amount_sat` vs available balance; derives burn rate from planned creates and flags **LOW** runway (below 72h) vs **SUFFICIENT** / **INSUFFICIENT**.
 - **Bitcoin helpers:** e.g. `block_subsidy`, `bitcoin` constants used by hashvalue.
 
@@ -125,7 +127,11 @@ Parses TOML into either:
 - **`SetBidsConfig`** — default sats per create, upstream, and `tuple[BidConfig, ...]` from `[[bids]]` (explicit mode; default `mode` is explicit).
 - **`TargetHashrateConfig`** — `mode = "target-hashrate"`, `target_hashrate_ph_s`, `max_bids_count`, no `[[bids]]` allowed.
 
-Shared validation: `default_amount_sat`, `[upstream]` with `url` + `identity` (`StratumUrl` validation).
+Shared validation: `default_amount_sat`, `[upstream].url` (`StratumUrl` validation). **`[upstream].identity`** is **required** in target-hashrate mode. In explicit mode: if there are **no** `[[bids]]` rows, **`[upstream].identity` may be omitted** (URL-only cleanup config). If there **are** `[[bids]]` rows and **`[upstream].identity` is empty**, **every row must set `identity=`** so each create/edit has a defined worker. Otherwise the default identity applies to rows that omit `identity=`.
+
+Example for **one gateway URL, multiple workers** (per-row identities): [`hashbidder-go/bids.multiple-workers.example.toml`](hashbidder-go/bids.multiple-workers.example.toml).
+
+Before parsing, both loaders **normalize every root-level `[[…bids…]]` array-of-tables header** to `[[bids]]`. Without that step, `[[Bids]]` plus `[[bids]]` could merge into a single TOML row (go-toml) or land in an ignored key (`Bids` vs `bids` in Python’s `tomllib`), so a worker block never reached the planner and price edits looked like no-ops.
 
 ### CLI (`hashbidder/main.py`)
 
@@ -213,6 +219,7 @@ CI (`.github/workflows/ci.yml`) runs: `ruff format/check`, `mypy`, `uv lock --ch
 - Braiins **tick size** and **cooldowns** are fetched from `/spot/settings` for target mode; explicit configs must use valid tick multiples (README notes current market tick).
 - OCEAN integration is **HTML scraping** — operational fragility is accepted for simplicity; parsing is strict (row/cell counts, labels).
 - Reconciliation matching is **greedy by “fewest field diffs”** and **amount-remaining sort** — deterministic but not globally optimal; documented here so operators know bids may reorder across runs when multiple similar bids exist.
+- **Multi-worker explicit configs** intentionally **do not cancel** live bids on the configured stratum URL whose identities are **absent** from the TOML, so unrelated workers keep running until you add matching `[[bids]]` rows or switch to an empty-bid “cancel all” file (see README “operating model”).
 
 ---
 
@@ -231,5 +238,7 @@ CI (`.github/workflows/ci.yml`) runs: `ruff format/check`, `mypy`, `uv lock --ch
 | `hashbidder/mempool_client.py`, `ocean_client.py` | Secondary HTTP ports |
 | `hashbidder/formatting.py` | Human-readable output |
 | `tests/` | Unit + CLI tests |
+| `hashbidder-go/bids.multiple-workers.example.toml` | Example TOML: one `[upstream].url`, per-row `identity=` (shared with Go port) |
+| `hashbidder-go/ARCHITECTURE.md` | Go port: layout, packages, Makefile / CI notes |
 
 This should be enough for a new contributor to trace any user-facing behavior from the CLI down to HTTP or pure functions without spelunking the whole tree.
