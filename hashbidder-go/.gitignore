@@ -4,3 +4,9 @@ vendor/
 coverage.out
 .env
 bids.*toml
+
+/.cursor/
+/*
+/ARCHITECTURE.md
+/README.md
+!hashbidder-go/
