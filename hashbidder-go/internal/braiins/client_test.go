@@ -164,3 +164,35 @@ func TestGetBidHistory_JSON(t *testing.T) {
 		t.Fatalf("expected no speed decrease, got %v", h.LastSpeedDecreaseAt())
 	}
 }
+
+// Bid IDs with reserved path characters must be escaped so one segment does not
+// become multiple path segments on the server.
+func TestGetBidHistory_pathEscapesSpecialBidID(t *testing.T) {
+	const payload = `{"history":[{"timestamp":"2026-04-17T08:00:00Z","price_sat":"100","speed_limit_ph":"1"}]}`
+	bidID := domain.BidID("B/extra") // slash must not appear as an extra path segment
+
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.URL.Path != "/spot/bid/detail/B/extra" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	key := "k"
+	c := NewClient(srv.URL, &key, srv.Client())
+	h, err := c.GetBidHistory(bidID)
+	if err != nil {
+		t.Fatalf("GetBidHistory: %v (server path was %q)", err, gotPath)
+	}
+	if gotPath != "/spot/bid/detail/B/extra" {
+		t.Fatalf("server path %q: expected single logical segment after decode", gotPath)
+	}
+	if len(h.Entries()) != 1 {
+		t.Fatalf("entries=%v", h.Entries())
+	}
+}
