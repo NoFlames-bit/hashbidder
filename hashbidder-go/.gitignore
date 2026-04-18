@@ -2,4 +2,5 @@
 bin/
 vendor/
 coverage.out
+.env
 bids.*toml
