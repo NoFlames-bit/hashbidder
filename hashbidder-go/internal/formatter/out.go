@@ -88,9 +88,18 @@ func formatFinalStateLine(pricePHDay domain.Sats, speed string, amount domain.Sa
 	return fmt.Sprintf("BID  price=%d sat/PH/Day  limit=%s PH/s  amount=%d sat  (%s)", pricePHDay, speed, amount, annotation)
 }
 
+func formatDeferredCreate(d domain.DeferredCreate) string {
+	price := toPHDay(d.Config.Price)
+	speed := fmtSpeed(d.Config.SpeedLimit.Value)
+	return fmt.Sprintf(
+		"DEFER create: target %d sat/PH/Day %s PH/s — existing bid %s is %s (not ACTIVE/CREATED); skipping duplicate order until next run",
+		price, speed, d.BlockingBid.ID, d.BlockingBid.Status,
+	)
+}
+
 func FormatPlan(plan domain.ReconciliationPlan, skipped []domain.UserBid) string {
 	sections := []string{}
-	hasChanges := len(plan.Edits) > 0 || len(plan.Creates) > 0 || len(plan.Cancels) > 0
+	hasChanges := len(plan.Edits) > 0 || len(plan.Creates) > 0 || len(plan.Cancels) > 0 || len(plan.DeferredCreates) > 0
 	if !hasChanges {
 		sections = append(sections, "No changes needed.")
 	} else {
@@ -115,6 +124,9 @@ func FormatPlan(plan domain.ReconciliationPlan, skipped []domain.UserBid) string
 				sections = append(sections, formatCreate(create))
 			}
 		}
+		for _, def := range plan.DeferredCreates {
+			sections = append(sections, formatDeferredCreate(def))
+		}
 	}
 
 	stateLines := []string{}
@@ -135,6 +147,12 @@ func FormatPlan(plan domain.ReconciliationPlan, skipped []domain.UserBid) string
 		price := toPHDay(create.Config.Price)
 		speed := fmtSpeed(create.Config.SpeedLimit.Value)
 		stateLines = append(stateLines, formatFinalStateLine(price, speed, create.Amount, "NEW"))
+	}
+	for _, def := range plan.DeferredCreates {
+		price := toPHDay(def.Config.Price)
+		speed := fmtSpeed(def.Config.SpeedLimit.Value)
+		stateLines = append(stateLines, formatFinalStateLine(price, speed, def.Amount,
+			fmt.Sprintf("DEFERRED until bid %s is ACTIVE/CREATED (currently %s)", def.BlockingBid.ID, def.BlockingBid.Status)))
 	}
 	for _, unch := range plan.Unchanged {
 		price := toPHDay(unch.Bid.Price)
@@ -319,7 +337,7 @@ func formatInt(n int64) string {
 
 func FormatSetBidsResult(res *bidrunner.SetBidsResult) string {
 	plan := res.Plan
-	hasChanges := len(plan.Edits) > 0 || len(plan.Creates) > 0 || len(plan.Cancels) > 0
+	hasChanges := len(plan.Edits) > 0 || len(plan.Creates) > 0 || len(plan.Cancels) > 0 || len(plan.DeferredCreates) > 0
 	bal := FormatBalanceCheck(res.BalanceCheck)
 
 	if res.BalanceCheck.Status == domain.BalanceInsufficient {
@@ -337,7 +355,15 @@ func FormatSetBidsResult(res *bidrunner.SetBidsResult) string {
 	if !hasChanges {
 		return strings.Join([]string{bal, "", "No changes needed."}, "\n")
 	}
-	sections := []string{bal, "", "=== Executing Changes ==="}
+	sections := []string{bal, ""}
+	if len(plan.DeferredCreates) > 0 {
+		sections = append(sections, FormatPlan(plan, res.SkippedBids), "")
+	}
+	if len(res.Execution.Outcomes) == 0 {
+		sections = append(sections, "No API mutations executed (deferred create(s) withheld).")
+		return strings.Join(sections, "\n")
+	}
+	sections = append(sections, "=== Executing Changes ===")
 	for _, o := range res.Execution.Outcomes {
 		sections = append(sections, FormatOutcome(o))
 	}

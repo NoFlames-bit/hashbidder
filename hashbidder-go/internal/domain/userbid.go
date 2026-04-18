@@ -22,6 +22,17 @@ var ManageableStatuses = map[BidStatus]struct{}{
 	BidStatusCreated: {},
 }
 
+// IsTerminalBidOrderStatus reports whether the bid is finished and no longer
+// occupies a live slot for the worker (so a new create is appropriate).
+func IsTerminalBidOrderStatus(s BidStatus) bool {
+	switch s {
+	case BidStatusCanceled, BidStatusFulfilled:
+		return true
+	default:
+		return false
+	}
+}
+
 type UserBid struct {
 	ID                 BidID
 	Price              HashratePrice

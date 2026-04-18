@@ -91,3 +91,39 @@ func TestCancelBid_Body(t *testing.T) {
 		t.Fatalf("body=%s", string(body))
 	}
 }
+
+func TestGetCurrentBids_JSONNumberIDStratumSSL(t *testing.T) {
+	const payload = `{"items":[{"bid":{"id":42,"price_sat":"500000","speed_limit_ph":"5","amount_sat":"100000","status":"BID_STATUS_ACTIVE","last_updated":"1970-01-01T00:00:00Z","dest_upstream":{"url":"stratum+ssl://pool.example.com:3333","identity":"  w1  "}}}]}`
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/spot/bid/current" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(payload))
+	}))
+	defer srv.Close()
+
+	key := "k"
+	c := NewClient(srv.URL, &key, srv.Client())
+	bids, err := c.GetCurrentBids()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bids) != 1 {
+		t.Fatalf("len=%d bids=%+v", len(bids), bids)
+	}
+	if bids[0].ID != "42" {
+		t.Fatalf("id=%q", bids[0].ID)
+	}
+	if bids[0].Upstream == nil {
+		t.Fatal("expected upstream")
+	}
+	if bids[0].Upstream.Identity != "w1" {
+		t.Fatalf("identity=%q", bids[0].Upstream.Identity)
+	}
+	if bids[0].Upstream.URL.Scheme() != "stratum+ssl" {
+		t.Fatalf("scheme=%q", bids[0].Upstream.URL.Scheme())
+	}
+}

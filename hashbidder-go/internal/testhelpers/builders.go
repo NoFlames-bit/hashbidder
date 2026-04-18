@@ -130,7 +130,7 @@ func ptrSats(v int) *domain.Sats {
 	return &s
 }
 
-func MakeBidConfig(price int, speed string) domain.BidConfig {
+func MakeBidConfig(price int, speed string, identity ...string) domain.BidConfig {
 	speedDec, err := decimal.NewFromString(speed)
 	if err != nil {
 		panic(err)
@@ -143,7 +143,11 @@ func MakeBidConfig(price int, speed string) domain.BidConfig {
 	if err != nil {
 		panic(err)
 	}
-	return domain.BidConfig{Price: pr, SpeedLimit: slim}
+	bc := domain.BidConfig{Price: pr, SpeedLimit: slim}
+	if len(identity) > 0 {
+		bc.Identity = identity[0]
+	}
+	return bc
 }
 
 func MakeSetBidsConfig(up domain.Upstream, bids ...domain.BidConfig) domain.SetBidsConfig {

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
@@ -48,6 +49,13 @@ func Reconcile(client braiins.HashpowerClient, cfg domain.SetBidsConfig, dryRun 
 		return nil, err
 	}
 	plan := domain.PlanBidChanges(cfg, current)
+	for _, d := range plan.DeferredCreates {
+		slog.Warn("deferred create: existing bid on delivery slot is not ACTIVE/CREATED; will retry on a later run",
+			"blocking_bid_id", d.BlockingBid.ID,
+			"blocking_status", d.BlockingBid.Status,
+			"slot_identity", d.Upstream.Identity,
+		)
+	}
 	skipped := make([]domain.UserBid, 0)
 	for _, b := range current {
 		if _, ok := domain.ManageableStatuses[b.Status]; !ok {

@@ -3,12 +3,23 @@ package cfg
 import (
 	"fmt"
 	"os"
+	"regexp"
+	"strings"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/domain"
 
 	"github.com/pelletier/go-toml/v2"
 	"github.com/shopspring/decimal"
 )
+
+// go-toml treats [[bids]] and [[Bids]] as the same array-of-tables key (case-insensitive),
+// collapsing multiple workers into a single element (last table wins). Normalize every
+// bids AOT header to lowercase [[bids]] so each [[bids]] / [[Bids]] / … becomes its own row.
+var bidArrayOfTablesHeader = regexp.MustCompile(`(?m)^(\s*)\[\[\s*[bB][iI][dD][sS]\s*\]\](.*)$`)
+
+func normalizeBidArrayOfTablesHeaders(b []byte) []byte {
+	return bidArrayOfTablesHeader.ReplaceAll(b, []byte("${1}[[bids]]${2}"))
+}
 
 type ConfigMode string
 
@@ -30,8 +41,9 @@ type rawUpstream struct {
 }
 
 type rawBid struct {
-	PriceSatPerPHDay any `toml:"price_sat_per_ph_day"`
-	SpeedLimitPHS    any `toml:"speed_limit_ph_s"`
+	PriceSatPerPHDay any    `toml:"price_sat_per_ph_day"`
+	SpeedLimitPHS    any    `toml:"speed_limit_ph_s"`
+	Identity         string `toml:"identity"`
 }
 
 type rawFile struct {
@@ -81,6 +93,7 @@ func LoadConfig(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	b = normalizeBidArrayOfTablesHeaders(b)
 	var data rawFile
 	if err := toml.Unmarshal(b, &data); err != nil {
 		return nil, fmt.Errorf("invalid TOML: %w", err)
@@ -104,17 +117,17 @@ func LoadConfig(path string) (any, error) {
 	if data.Upstream.URL == "" {
 		return nil, fmt.Errorf("missing required upstream field: url")
 	}
-	if data.Upstream.Identity == "" {
-		return nil, fmt.Errorf("missing required upstream field: identity")
-	}
-	su, err := domain.ParseStratumURL(data.Upstream.URL)
+	su, err := domain.ParseStratumURL(strings.TrimSpace(data.Upstream.URL))
 	if err != nil {
 		return nil, fmt.Errorf("invalid upstream URL: %w", err)
 	}
-	up := domain.Upstream{URL: su, Identity: data.Upstream.Identity}
+	upIdentity := strings.TrimSpace(data.Upstream.Identity)
 	def := domain.Sats(defAmt)
 
 	if mode == TargetHashrate {
+		if upIdentity == "" {
+			return nil, fmt.Errorf("missing required upstream field: identity (required for target-hashrate mode)")
+		}
 		if len(data.Bids) > 0 {
 			return nil, fmt.Errorf("target-hashrate mode does not accept [[bids]] sections")
 		}
@@ -144,7 +157,7 @@ func LoadConfig(path string) (any, error) {
 		}
 		return TargetHashrateConfig{
 			DefaultAmount:  def,
-			Upstream:       up,
+			Upstream:       domain.Upstream{URL: su, Identity: upIdentity},
 			TargetHashrate: thr,
 			MaxBidsCount:   int(maxBC),
 		}, nil
@@ -177,8 +190,16 @@ func LoadConfig(path string) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		bids = append(bids, domain.BidConfig{Price: price, SpeedLimit: slim})
+		bids = append(bids, domain.BidConfig{Price: price, SpeedLimit: slim, Identity: strings.TrimSpace(bd.Identity)})
 	}
+	if upIdentity == "" && len(bids) > 0 {
+		for i := range bids {
+			if strings.TrimSpace(bids[i].Identity) == "" {
+				return nil, fmt.Errorf("bid %d: identity is required when [upstream].identity is omitted (set identity on each [[bids]] or a default on [upstream])", i)
+			}
+		}
+	}
+	up := domain.Upstream{URL: su, Identity: upIdentity}
 	return domain.SetBidsConfig{
 		DefaultAmount: def,
 		Upstream:      up,

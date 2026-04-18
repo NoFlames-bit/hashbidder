@@ -3,6 +3,7 @@ package domain_test
 import (
 	"math/rand"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/domain"
@@ -11,7 +12,7 @@ import (
 
 func TestPlanBidChanges_Empty(t *testing.T) {
 	plan := domain.PlanBidChanges(testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool), nil)
-	if len(plan.Edits)+len(plan.Creates)+len(plan.Cancels)+len(plan.Unchanged) != 0 {
+	if len(plan.Edits)+len(plan.Creates)+len(plan.Cancels)+len(plan.Unchanged)+len(plan.DeferredCreates) != 0 {
 		t.Fatalf("expected empty plan, got %+v", plan)
 	}
 }
@@ -85,11 +86,14 @@ func TestPlanBidChanges_UpstreamMismatch(t *testing.T) {
 	bid := testhelpers.MakeUserBid("B1", 500, "5.0", testhelpers.WithUpstream(testhelpers.OtherUpstream))
 	cfgEntry := testhelpers.MakeBidConfig(500, "5.0")
 	plan := domain.PlanBidChanges(testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, cfgEntry), []domain.UserBid{bid})
-	if len(plan.Cancels) != 1 || plan.Cancels[0].Reason != domain.CancelReasonUpstreamMismatch {
+	if len(plan.Cancels) != 1 || plan.Cancels[0].Reason != domain.CancelReasonUnmatched {
 		t.Fatalf("cancels=%+v", plan.Cancels)
 	}
-	if len(plan.Creates) != 1 || plan.Creates[0].Replaces == nil || plan.Creates[0].Replaces.ID != bid.ID {
+	if len(plan.Creates) != 1 || plan.Creates[0].Replaces != nil {
 		t.Fatalf("creates=%+v", plan.Creates)
+	}
+	if plan.Creates[0].Upstream != testhelpers.UpstreamPool {
+		t.Fatalf("create upstream=%+v", plan.Creates[0].Upstream)
 	}
 }
 
@@ -121,13 +125,16 @@ func TestPlanBidChanges_PausedFrozenCanceled(t *testing.T) {
 		bid := testhelpers.MakeUserBid("B1", 500, "5.0", testhelpers.WithBidStatus(st))
 		cfg := testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, testhelpers.MakeBidConfig(500, "5.0"))
 		plan := domain.PlanBidChanges(cfg, []domain.UserBid{bid})
-		if len(plan.Creates) != 1 || len(plan.Cancels) != 0 {
+		if len(plan.DeferredCreates) != 1 || len(plan.Creates) != 0 || len(plan.Cancels) != 0 {
 			t.Fatalf("status=%s plan=%+v", st, plan)
+		}
+		if plan.DeferredCreates[0].BlockingBid.ID != bid.ID {
+			t.Fatalf("blocking bid id")
 		}
 	}
 	bid := testhelpers.MakeUserBid("B1", 500, "5.0", testhelpers.WithBidStatus(domain.BidStatusCanceled))
 	plan := domain.PlanBidChanges(testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, testhelpers.MakeBidConfig(500, "5.0")), []domain.UserBid{bid})
-	if len(plan.Creates) != 1 || len(plan.Cancels) != 0 {
+	if len(plan.Creates) != 1 || len(plan.Cancels) != 0 || len(plan.DeferredCreates) != 0 {
 		t.Fatalf("canceled plan=%+v", plan)
 	}
 }
@@ -172,12 +179,104 @@ func TestPlanBidChanges_UpstreamMismatchOnEditCandidate(t *testing.T) {
 	bid := testhelpers.MakeUserBid("B1", 400, "5.0", testhelpers.WithUpstream(testhelpers.OtherUpstream))
 	cfg := testhelpers.MakeBidConfig(500, "5.0")
 	plan := domain.PlanBidChanges(testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, cfg), []domain.UserBid{bid})
-	if len(plan.Cancels) != 1 || len(plan.Creates) != 1 {
-		t.Fatalf("plan=%+v / %+v", plan.Cancels, plan.Creates)
+	if len(plan.Cancels) != 1 || plan.Cancels[0].Reason != domain.CancelReasonUnmatched {
+		t.Fatalf("cancels=%+v", plan.Cancels)
+	}
+	if len(plan.Creates) != 1 || plan.Creates[0].Replaces != nil {
+		t.Fatalf("creates=%+v", plan.Creates)
 	}
 }
 
-func TestPlanBidChanges_AllPausedCreatesOnly(t *testing.T) {
+func TestSameStratumURL_IgnoresScheme(t *testing.T) {
+	tcp, err := domain.ParseStratumURL("stratum+tcp://pool.example.com:3333")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ssl, err := domain.ParseStratumURL("stratum+ssl://pool.example.com:3333")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := domain.Upstream{URL: tcp, Identity: "w1"}
+	b := domain.Upstream{URL: ssl, Identity: "w1"}
+	if !domain.SameStratumURL(a, b) {
+		t.Fatal("expected tcp and ssl same endpoint")
+	}
+}
+
+func TestPlanBidChanges_SiblingWorkerRetainedWhenNotInConfig(t *testing.T) {
+	base := testhelpers.UpstreamPool
+	flbr := domain.Upstream{URL: base.URL, Identity: "bc1q3gz7w2glll0aawxxzluprqqwkp7ftp7tzh4ew6.flbr"}
+	bid := testhelpers.MakeUserBid("B1", 47017, "1.0", testhelpers.WithUpstream(flbr))
+	bidderOnly := testhelpers.MakeBidConfig(46786, "1.0", "bc1q3gz7w2glll0aawxxzluprqqwkp7ftp7tzh4ew6.bidder")
+	cfg := testhelpers.MakeSetBidsConfig(base, bidderOnly)
+	plan := domain.PlanBidChanges(cfg, []domain.UserBid{bid})
+	if len(plan.Cancels) != 0 || len(plan.Edits) != 0 {
+		t.Fatalf("cancels=%d edits=%d", len(plan.Cancels), len(plan.Edits))
+	}
+	if len(plan.Creates) != 1 {
+		t.Fatalf("creates=%+v", plan.Creates)
+	}
+	if plan.Creates[0].Upstream.Identity != "bc1q3gz7w2glll0aawxxzluprqqwkp7ftp7tzh4ew6.bidder" {
+		t.Fatalf("create upstream=%q", plan.Creates[0].Upstream.Identity)
+	}
+}
+
+func TestPlanBidChanges_TwoPerRowIdentitiesPriceBumpOnSecondWorker(t *testing.T) {
+	u, err := domain.ParseStratumURL("stratum+tcp://pool.example.com:3333")
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := domain.Upstream{URL: u, Identity: ""}
+	flID := "bc1q3gz7w2glll0aawxxzluprqqwkp7ftp7tzh4ew6.flbr"
+	bdID := "bc1q3gz7w2glll0aawxxzluprqqwkp7ftp7tzh4ew6.bidder"
+	flbr := domain.Upstream{URL: u, Identity: flID}
+	bdd := domain.Upstream{URL: u, Identity: bdID}
+	b1 := testhelpers.MakeUserBid("Bfl", 47017, "1.0", testhelpers.WithUpstream(flbr))
+	b2 := testhelpers.MakeUserBid("Bbd", 46786, "1.0", testhelpers.WithUpstream(bdd))
+	cfg := domain.SetBidsConfig{
+		DefaultAmount: 44_000,
+		Upstream:      base,
+		Bids: []domain.BidConfig{
+			testhelpers.MakeBidConfig(47017, "1.0", flID),
+			testhelpers.MakeBidConfig(47089, "1.0", bdID),
+		},
+	}
+	plan := domain.PlanBidChanges(cfg, []domain.UserBid{b1, b2})
+	if len(plan.Edits) != 1 || plan.Edits[0].Bid.ID != "Bbd" {
+		t.Fatalf("edits=%+v", plan.Edits)
+	}
+	if len(plan.Unchanged) != 1 || plan.Unchanged[0].Bid.ID != "Bfl" {
+		t.Fatalf("unch=%+v", plan.Unchanged)
+	}
+	if len(plan.Creates)+len(plan.Cancels) != 0 {
+		t.Fatalf("creates=%d cancels=%d", len(plan.Creates), len(plan.Cancels))
+	}
+}
+
+func TestPlanBidChanges_PerBidIdentityMatchesWorker(t *testing.T) {
+	base := testhelpers.UpstreamPool
+	w2 := domain.Upstream{URL: base.URL, Identity: "worker-b"}
+	w3 := domain.Upstream{URL: base.URL, Identity: "worker-c"}
+	b2 := testhelpers.MakeUserBid("B2", 300, "10.0", testhelpers.WithUpstream(w2))
+	b3 := testhelpers.MakeUserBid("B3", 100, "1.0", testhelpers.WithUpstream(w3))
+	c2 := testhelpers.MakeBidConfig(300, "10.0", "worker-b")
+	c3 := testhelpers.MakeBidConfig(50, "2.0", "worker-c")
+	plan := domain.PlanBidChanges(
+		testhelpers.MakeSetBidsConfig(base, c2, c3),
+		[]domain.UserBid{b2, b3},
+	)
+	if len(plan.Unchanged) != 1 || plan.Unchanged[0].Bid.ID != b2.ID {
+		t.Fatalf("unch=%+v", plan.Unchanged)
+	}
+	if len(plan.Edits) != 1 || plan.Edits[0].Bid.ID != b3.ID {
+		t.Fatalf("edits=%+v", plan.Edits)
+	}
+	if len(plan.Cancels)+len(plan.Creates) != 0 {
+		t.Fatalf("cancels=%d creates=%d", len(plan.Cancels), len(plan.Creates))
+	}
+}
+
+func TestPlanBidChanges_AllPausedDefersCreates(t *testing.T) {
 	bids := []domain.UserBid{
 		testhelpers.MakeUserBid("B1", 500, "5.0", testhelpers.WithBidStatus(domain.BidStatusPaused)),
 		testhelpers.MakeUserBid("B2", 300, "10.0", testhelpers.WithBidStatus(domain.BidStatusFrozen)),
@@ -185,7 +284,7 @@ func TestPlanBidChanges_AllPausedCreatesOnly(t *testing.T) {
 	c1 := testhelpers.MakeBidConfig(500, "5.0")
 	c2 := testhelpers.MakeBidConfig(300, "10.0")
 	plan := domain.PlanBidChanges(testhelpers.MakeSetBidsConfig(testhelpers.UpstreamPool, c1, c2), bids)
-	if len(plan.Creates) != 2 || len(plan.Cancels) != 0 {
+	if len(plan.DeferredCreates) != 2 || len(plan.Creates) != 0 || len(plan.Cancels) != 0 {
 		t.Fatalf("plan=%+v", plan)
 	}
 }
@@ -248,26 +347,46 @@ func TestPlanBidChanges_RandomInvariants(t *testing.T) {
 		for _, c := range plan.Cancels {
 			canceled[c.Bid.ID] = struct{}{}
 		}
+		managedID := map[string]struct{}{}
+		for _, e := range cfg.Bids {
+			u := domain.EffectiveUpstream(cfg, e)
+			managedID[strings.TrimSpace(u.Identity)] = struct{}{}
+		}
 		manageable := 0
 		for _, b := range bids {
-			if _, ok := domain.ManageableStatuses[b.Status]; ok {
-				manageable++
-				cnt := 0
-				if _, ok := edited[b.ID]; ok {
-					cnt++
+			if _, ok := domain.ManageableStatuses[b.Status]; !ok {
+				continue
+			}
+			manageable++
+			cnt := 0
+			if _, ok := edited[b.ID]; ok {
+				cnt++
+			}
+			if _, ok := unch[b.ID]; ok {
+				cnt++
+			}
+			if _, ok := canceled[b.ID]; ok {
+				cnt++
+			}
+			if cnt > 1 {
+				t.Fatalf("iter=%d bid %s in %d buckets", iter, b.ID, cnt)
+			}
+			if cnt == 0 {
+				if len(cfg.Bids) == 0 {
+					t.Fatalf("iter=%d bid %s should be canceled with empty config", iter, b.ID)
 				}
-				if _, ok := unch[b.ID]; ok {
-					cnt++
+				if b.Upstream == nil {
+					t.Fatalf("iter=%d bid %s retained without upstream", iter, b.ID)
 				}
-				if _, ok := canceled[b.ID]; ok {
-					cnt++
+				if !domain.SameStratumURL(*b.Upstream, cfg.Upstream) {
+					t.Fatalf("iter=%d bid %s off-pool but not in plan", iter, b.ID)
 				}
-				if cnt != 1 {
-					t.Fatalf("iter=%d bid %s in %d buckets", iter, b.ID, cnt)
+				if _, ok := managedID[strings.TrimSpace(b.Upstream.Identity)]; ok {
+					t.Fatalf("iter=%d bid %s managed identity surplus not canceled", iter, b.ID)
 				}
 			}
 		}
-		if len(edited)+len(unch)+len(canceled) != manageable {
+		if len(edited)+len(unch)+len(canceled) > manageable {
 			t.Fatalf("iter=%d bucket sizes mismatch", iter)
 		}
 
@@ -286,31 +405,24 @@ func TestPlanBidChanges_RandomInvariants(t *testing.T) {
 			}
 		}
 
-		mismatch := 0
-		for _, c := range plan.Cancels {
-			if c.Reason == domain.CancelReasonUpstreamMismatch {
-				mismatch++
-			}
+		if len(plan.Edits)+len(plan.Unchanged)+len(plan.Creates)+len(plan.DeferredCreates) != len(cfg.Bids) {
+			t.Fatalf("iter=%d cfg slots=%d edits=%d unch=%d creates=%d deferred=%d",
+				iter, len(cfg.Bids), len(plan.Edits), len(plan.Unchanged), len(plan.Creates), len(plan.DeferredCreates))
 		}
-		repl := 0
 		for _, cr := range plan.Creates {
 			if cr.Replaces != nil {
-				repl++
+				t.Fatalf("iter=%d unexpected replaces on create", iter)
 			}
-		}
-		if mismatch != repl {
-			t.Fatalf("iter=%d mismatch=%d repl=%d", iter, mismatch, repl)
-		}
-
-		matched := len(plan.Edits) + len(plan.Unchanged) + mismatch
-		pureCreates := len(plan.Creates) - mismatch
-		if matched+pureCreates != len(cfg.Bids) {
-			t.Fatalf("iter=%d cfg accounting matched=%d pure=%d bids=%d", iter, matched, pureCreates, len(cfg.Bids))
 		}
 
 		for _, cr := range plan.Creates {
 			if cr.Amount != cfg.DefaultAmount {
 				t.Fatalf("iter=%d create amount", iter)
+			}
+		}
+		for _, d := range plan.DeferredCreates {
+			if d.Amount != cfg.DefaultAmount {
+				t.Fatalf("iter=%d deferred amount", iter)
 			}
 		}
 	}

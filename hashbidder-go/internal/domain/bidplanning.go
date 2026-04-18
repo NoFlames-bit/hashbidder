@@ -2,6 +2,7 @@ package domain
 
 import (
 	"sort"
+	"strings"
 )
 
 type CancelReason string
@@ -43,11 +44,22 @@ type UnchangedBid struct {
 	Bid UserBid
 }
 
+// DeferredCreate is a config row that would become a new bid, but an existing
+// order already uses the same delivery slot while not ACTIVE/CREATED. We skip
+// creating a duplicate until a later run when the order is manageable again.
+type DeferredCreate struct {
+	Config      BidConfig
+	Amount      Sats
+	Upstream    Upstream
+	BlockingBid UserBid
+}
+
 type ReconciliationPlan struct {
-	Edits     []EditAction
-	Creates   []CreateAction
-	Cancels   []CancelAction
-	Unchanged []UnchangedBid
+	Edits            []EditAction
+	Creates          []CreateAction
+	Cancels          []CancelAction
+	Unchanged        []UnchangedBid
+	DeferredCreates  []DeferredCreate
 }
 
 func fieldDiffCount(bid UserBid, cfg BidConfig) int {
@@ -68,11 +80,93 @@ func upstreamEqual(a, b *Upstream) bool {
 	if a == nil || b == nil {
 		return false
 	}
-	as, ah, ap := a.URL.Key()
-	bs, bh, bp := b.URL.Key()
-	return a.Identity == b.Identity && as == bs && ah == bh && ap == bp
+	if strings.TrimSpace(a.Identity) != strings.TrimSpace(b.Identity) {
+		return false
+	}
+	return SameStratumURL(*a, *b)
 }
 
+// SameStratumURL reports whether two upstreams use the same stratum endpoint
+// (host + port). Scheme is ignored so stratum+tcp and stratum+ssl match, which
+// matters when the config and API disagree on TLS naming for the same pool.
+func SameStratumURL(a, b Upstream) bool {
+	return strings.EqualFold(strings.TrimSpace(a.URL.Host()), strings.TrimSpace(b.URL.Host())) &&
+		strings.TrimSpace(a.URL.Port()) == strings.TrimSpace(b.URL.Port())
+}
+
+// managedIdentities returns worker names (full identity strings) that appear in
+// explicit [[bids]] rows. Used so we do not cancel sibling orders on the same
+// stratum URL when the config only manages a subset of workers.
+func managedIdentities(cfg SetBidsConfig) map[string]struct{} {
+	m := make(map[string]struct{}, len(cfg.Bids))
+	for _, entry := range cfg.Bids {
+		u := EffectiveUpstream(cfg, entry)
+		m[strings.TrimSpace(u.Identity)] = struct{}{}
+	}
+	return m
+}
+
+// EffectiveUpstream returns the delivery destination for a config row.
+func EffectiveUpstream(cfg SetBidsConfig, entry BidConfig) Upstream {
+	if strings.TrimSpace(entry.Identity) != "" {
+		return Upstream{URL: cfg.Upstream.URL, Identity: strings.TrimSpace(entry.Identity)}
+	}
+	return Upstream{URL: cfg.Upstream.URL, Identity: strings.TrimSpace(cfg.Upstream.Identity)}
+}
+
+func remainingSortKey(b UserBid) int64 {
+	if b.AmountRemainingSat != nil {
+		return int64(*b.AmountRemainingSat)
+	}
+	return int64(b.AmountSat)
+}
+
+// bidBetterTie returns true if a should win over b when fieldDiffCount is equal.
+func bidBetterTie(a, b UserBid) bool {
+	ra, rb := remainingSortKey(a), remainingSortKey(b)
+	if ra != rb {
+		return ra > rb
+	}
+	return a.ID < b.ID
+}
+
+func blockingNonManageableBidForSlot(all []UserBid, slotUp Upstream) *UserBid {
+	for i := range all {
+		b := &all[i]
+		if _, ok := ManageableStatuses[b.Status]; ok {
+			continue
+		}
+		if IsTerminalBidOrderStatus(b.Status) {
+			continue
+		}
+		if b.Upstream == nil || !upstreamEqual(b.Upstream, &slotUp) {
+			continue
+		}
+		return b
+	}
+	return nil
+}
+
+func removeBidByID(bids []UserBid, id BidID) []UserBid {
+	for i, b := range bids {
+		if b.ID == id {
+			return append(bids[:i], bids[i+1:]...)
+		}
+	}
+	return bids
+}
+
+// PlanBidChanges matches each config row to at most one manageable bid with the
+// same effective upstream (URL + identity), preferring fewest price/speed diffs
+// then higher remaining collateral. Unmatched slots become creates, unless a
+// non-terminal bid already occupies the slot (e.g. PAUSED) — then the create is
+// deferred (DeferredCreates) to avoid a duplicate order.
+//
+// Orphan bids: if len(cfg.Bids)==0, every remaining manageable bid is canceled.
+// Otherwise a remaining bid is canceled only when it is on a different stratum
+// URL than [upstream], or its identity is listed in the config (surplus duplicate
+// for a managed worker). Bids on the same URL as [upstream] whose identity is
+// not listed in any [[bids]] row are left alone so you can add workers incrementally.
 func PlanBidChanges(cfg SetBidsConfig, current []UserBid) ReconciliationPlan {
 	manageable := make([]UserBid, 0, len(current))
 	for _, b := range current {
@@ -81,77 +175,55 @@ func PlanBidChanges(cfg SetBidsConfig, current []UserBid) ReconciliationPlan {
 		}
 	}
 	sort.SliceStable(manageable, func(i, j int) bool {
-		ri := manageable[i].AmountRemainingSat
-		rj := manageable[j].AmountRemainingSat
-		var vi, vj int64
-		if ri != nil {
-			vi = int64(*ri)
-		} else {
-			vi = int64(manageable[i].AmountSat)
-		}
-		if rj != nil {
-			vj = int64(*rj)
-		} else {
-			vj = int64(manageable[j].AmountSat)
-		}
-		return vi > vj
+		return remainingSortKey(manageable[i]) > remainingSortKey(manageable[j])
 	})
 
-	unmatched := make([]int, 0, len(cfg.Bids))
-	for i := range cfg.Bids {
-		unmatched = append(unmatched, i)
-	}
+	available := append([]UserBid(nil), manageable...)
 
 	edits := []EditAction{}
 	creates := []CreateAction{}
 	cancels := []CancelAction{}
 	unchanged := []UnchangedBid{}
+	deferred := []DeferredCreate{}
 
-	paired := map[BidID]int{}
-
-	for _, bid := range manageable {
-		if len(unmatched) == 0 {
-			break
-		}
-		bestIdx := unmatched[0]
-		bestScore := fieldDiffCount(bid, cfg.Bids[bestIdx])
-		for _, ci := range unmatched[1:] {
-			sc := fieldDiffCount(bid, cfg.Bids[ci])
-			if sc < bestScore {
+	for _, entry := range cfg.Bids {
+		slotUp := EffectiveUpstream(cfg, entry)
+		var best *UserBid
+		bestScore := 0
+		first := true
+		for i := range available {
+			bid := &available[i]
+			if bid.Upstream == nil || !upstreamEqual(bid.Upstream, &slotUp) {
+				continue
+			}
+			sc := fieldDiffCount(*bid, entry)
+			if first || sc < bestScore || (sc == bestScore && bidBetterTie(*bid, *best)) {
+				best = bid
 				bestScore = sc
-				bestIdx = ci
+				first = false
 			}
 		}
-		paired[bid.ID] = bestIdx
-		// remove bestIdx from unmatched
-		for i, v := range unmatched {
-			if v == bestIdx {
-				unmatched = append(unmatched[:i], unmatched[i+1:]...)
-				break
+		if best == nil {
+			if blocker := blockingNonManageableBidForSlot(current, slotUp); blocker != nil {
+				deferred = append(deferred, DeferredCreate{
+					Config:      entry,
+					Amount:      cfg.DefaultAmount,
+					Upstream:    slotUp,
+					BlockingBid: *blocker,
+				})
+				continue
 			}
-		}
-	}
-
-	for _, bid := range manageable {
-		ci, ok := paired[bid.ID]
-		if !ok {
-			cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUnmatched})
-			continue
-		}
-		entry := cfg.Bids[ci]
-		diffs := fieldDiffCount(bid, entry)
-		if !upstreamEqual(bid.Upstream, &cfg.Upstream) {
-			bcopy := bid
-			cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUpstreamMismatch})
 			creates = append(creates, CreateAction{
 				Config:   entry,
 				Amount:   cfg.DefaultAmount,
-				Upstream: cfg.Upstream,
-				Replaces: &bcopy,
+				Upstream: slotUp,
+				Replaces: nil,
 			})
 			continue
 		}
-		if diffs == 0 {
+		bid := *best
+		available = removeBidByID(available, bid.ID)
+		if fieldDiffCount(bid, entry) == 0 {
 			unchanged = append(unchanged, UnchangedBid{Bid: bid})
 			continue
 		}
@@ -164,19 +236,33 @@ func PlanBidChanges(cfg SetBidsConfig, current []UserBid) ReconciliationPlan {
 		})
 	}
 
-	for _, ci := range unmatched {
-		creates = append(creates, CreateAction{
-			Config:   cfg.Bids[ci],
-			Amount:   cfg.DefaultAmount,
-			Upstream: cfg.Upstream,
-			Replaces: nil,
-		})
+	if len(cfg.Bids) == 0 {
+		for _, bid := range available {
+			cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUnmatched})
+		}
+	} else {
+		managed := managedIdentities(cfg)
+		for _, bid := range available {
+			if bid.Upstream == nil {
+				cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUnmatched})
+				continue
+			}
+			if !SameStratumURL(*bid.Upstream, cfg.Upstream) {
+				cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUnmatched})
+				continue
+			}
+			if _, ok := managed[strings.TrimSpace(bid.Upstream.Identity)]; ok {
+				cancels = append(cancels, CancelAction{Bid: bid, Reason: CancelReasonUnmatched})
+				continue
+			}
+		}
 	}
 
 	return ReconciliationPlan{
-		Edits:     edits,
-		Creates:   creates,
-		Cancels:   cancels,
-		Unchanged: unchanged,
+		Edits:           edits,
+		Creates:         creates,
+		Cancels:         cancels,
+		Unchanged:       unchanged,
+		DeferredCreates: deferred,
 	}
 }

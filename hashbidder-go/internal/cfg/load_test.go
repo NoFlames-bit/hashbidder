@@ -54,6 +54,101 @@ speed_limit_ph_s = 10.0
 	}
 }
 
+func TestLoadConfig_BidLevelIdentity(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "c.toml", `
+default_amount_sat = 100000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "default-worker"
+
+[[bids]]
+price_sat_per_ph_day = 500
+speed_limit_ph_s = 5.0
+
+[[bids]]
+price_sat_per_ph_day = 300
+speed_limit_ph_s = 10.0
+identity = "rig.other"
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := any.(domain.SetBidsConfig)
+	if cfg.Bids[0].Identity != "" {
+		t.Fatalf("bid0 identity=%q", cfg.Bids[0].Identity)
+	}
+	if cfg.Bids[1].Identity != "rig.other" {
+		t.Fatalf("bid1 identity=%q", cfg.Bids[1].Identity)
+	}
+}
+
+func TestLoadConfig_NormalizesBidsArrayOfTablesHeaderCasing(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "c.toml", `
+default_amount_sat = 44000
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+
+[[bids]]
+identity = "worker_a"
+price_sat_per_ph_day = 100
+speed_limit_ph_s = 1.0
+
+[[Bids]]
+identity = "worker_b"
+price_sat_per_ph_day = 200
+speed_limit_ph_s = 1.0
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := any.(domain.SetBidsConfig)
+	if len(cfg.Bids) != 2 {
+		t.Fatalf("expected 2 bid rows after header normalization, got %d", len(cfg.Bids))
+	}
+	if cfg.Bids[0].Identity != "worker_a" || cfg.Bids[1].Identity != "worker_b" {
+		t.Fatalf("identities %q %q", cfg.Bids[0].Identity, cfg.Bids[1].Identity)
+	}
+}
+
+func TestLoadConfig_URLOnlyUpstream_PerBidIdentities(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "c.toml", `
+default_amount_sat = 44000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+
+[[bids]]
+identity = "bc1qexample.worker_a"
+price_sat_per_ph_day = 47000
+speed_limit_ph_s = 1.0
+
+[[bids]]
+identity = "bc1qexample.worker_b"
+price_sat_per_ph_day = 46000
+speed_limit_ph_s = 1.0
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := any.(domain.SetBidsConfig)
+	if cfg.Upstream.Identity != "" {
+		t.Fatalf("expected empty [upstream].identity, got %q", cfg.Upstream.Identity)
+	}
+	if len(cfg.Bids) != 2 {
+		t.Fatalf("bids=%d", len(cfg.Bids))
+	}
+	if cfg.Bids[0].Identity != "bc1qexample.worker_a" || cfg.Bids[1].Identity != "bc1qexample.worker_b" {
+		t.Fatalf("identities %+v %+v", cfg.Bids[0].Identity, cfg.Bids[1].Identity)
+	}
+}
+
 func TestLoadConfig_EmptyBids(t *testing.T) {
 	dir := t.TempDir()
 	p := writeCfg(t, dir, "c.toml", `
@@ -70,6 +165,27 @@ identity = "worker1"
 	cfg := any.(domain.SetBidsConfig)
 	if len(cfg.Bids) != 0 {
 		t.Fatal("expected empty bids")
+	}
+}
+
+func TestLoadConfig_EmptyBids_URLOnlyNoUpstreamIdentity(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "c.toml", `
+default_amount_sat = 50000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := any.(domain.SetBidsConfig)
+	if cfg.Upstream.Identity != "" {
+		t.Fatalf("upstream identity=%q", cfg.Upstream.Identity)
+	}
+	if len(cfg.Bids) != 0 {
+		t.Fatalf("expected no bids, got %d", len(cfg.Bids))
 	}
 }
 
@@ -93,10 +209,13 @@ default_amount_sat = 100000
 [upstream]
 identity = "worker1"
 `, "url"},
-		{"missing_identity", `
+		{"bid_missing_row_identity_when_upstream_url_only", `
 default_amount_sat = 100000
 [upstream]
 url = "stratum+tcp://pool.example.com:3333"
+[[bids]]
+price_sat_per_ph_day = 500
+speed_limit_ph_s = 5.0
 `, "identity"},
 		{"missing_price", `
 default_amount_sat = 100000
@@ -217,6 +336,23 @@ identity = "worker1"
 [[bids]]
 price_sat_per_ph_day = 500
 speed_limit_ph_s = 5.0
+`)
+	_, err := LoadConfig(p)
+	if err == nil || !strings.Contains(err.Error(), "target-hashrate") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestLoadConfig_TargetRequiresUpstreamIdentity(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "t.toml", `
+mode = "target-hashrate"
+default_amount_sat = 100000
+target_hashrate_ph_s = 10.0
+max_bids_count = 3
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
 `)
 	_, err := LoadConfig(p)
 	if err == nil || !strings.Contains(err.Error(), "target-hashrate") {

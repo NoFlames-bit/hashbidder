@@ -248,8 +248,26 @@ func (c *Client) GetCurrentBids() ([]domain.UserBid, error) {
 	return out, nil
 }
 
+func bidMapString(m map[string]any, key string) string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return ""
+	}
+	switch x := v.(type) {
+	case string:
+		return strings.TrimSpace(x)
+	case json.Number:
+		return strings.TrimSpace(x.String())
+	default:
+		return strings.TrimSpace(fmt.Sprint(x))
+	}
+}
+
 func parseUserBid(item map[string]any) (domain.UserBid, error) {
-	bid, _ := item["bid"].(map[string]any)
+	bid, ok := item["bid"].(map[string]any)
+	if !ok || bid == nil {
+		return domain.UserBid{}, fmt.Errorf("missing bid object")
+	}
 	var state map[string]any
 	if s, ok := item["state_estimate"].(map[string]any); ok {
 		state = s
@@ -259,7 +277,7 @@ func parseUserBid(item map[string]any) (domain.UserBid, error) {
 	sl, _ := decFromAny(bid["speed_limit_ph"])
 	speed, _ := domain.NewHashrate(sl, domain.PH, domain.Second)
 	amt, _ := decFromAny(bid["amount_sat"])
-	st := domain.BidStatus(bid["status"].(string))
+	st := domain.BidStatus(bidMapString(bid, "status"))
 	lu, err := time.Parse(time.RFC3339Nano, bid["last_updated"].(string))
 	if err != nil {
 		lu, _ = time.Parse(time.RFC3339, bid["last_updated"].(string))
@@ -286,13 +304,15 @@ func parseUserBid(item map[string]any) (domain.UserBid, error) {
 	}
 	var up *domain.Upstream
 	if du, ok := bid["dest_upstream"].(map[string]any); ok && du != nil {
-		su, err := domain.ParseStratumURL(du["url"].(string))
+		rawURL := strings.TrimSpace(fmt.Sprint(du["url"]))
+		su, err := domain.ParseStratumURL(rawURL)
 		if err == nil {
-			up = &domain.Upstream{URL: su, Identity: du["identity"].(string)}
+			id := strings.TrimSpace(fmt.Sprint(du["identity"]))
+			up = &domain.Upstream{URL: su, Identity: id}
 		}
 	}
 	return domain.UserBid{
-		ID:                 domain.BidID(bid["id"].(string)),
+		ID:                 domain.BidID(bidMapString(bid, "id")),
 		Price:              price,
 		SpeedLimitPH:       speed,
 		AmountSat:          domain.Sats(amt.IntPart()),
