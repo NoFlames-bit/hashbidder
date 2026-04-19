@@ -4,7 +4,7 @@ vendor/
 coverage.out
 .env
 bids.*toml
-nohup.out
+nohup.*
 ../.cursor/
 ../.vscode/
 !bids.multiple-workers.example.toml

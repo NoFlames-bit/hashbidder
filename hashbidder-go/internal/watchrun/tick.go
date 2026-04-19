@@ -91,7 +91,7 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 				if id == "" {
 					id = string(ub.ID)
 				}
-				priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s %d→%d sat/PH/day", id, liveS, targetS))
+				priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s watch_strategy=%s %d→%d sat/PH/day", id, rule.Strategy, liveS, targetS))
 			}
 		}
 	}
