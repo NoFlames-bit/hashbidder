@@ -4,6 +4,7 @@ vendor/
 coverage.out
 .env
 bids.*toml
+nohup.out
 
 /.cursor/
 /ARCHITECTURE.md
