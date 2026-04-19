@@ -132,7 +132,7 @@ Parses TOML into **`domain.SetBidsConfig`** (explicit / default), **`cfg.TargetH
 - Loads `.env`, configures **slog** (stderr; optional tee to `--log-file`).
 - **Commands:** `ping`, `bids`, `hashvalue`, `ocean-account-stats`, `set-bids --bid-config`, **`watch --bid-config`**.
 - **`set-bids`:** `cfg.LoadConfig`; branch on `WatchModeConfig` (error: use `watch`) vs `TargetHashrateConfig` vs `domain.SetBidsConfig`; target mode requires **`OCEAN_ADDRESS`**. Exits **1** if post-run balance status is insufficient (matches Python).
-- **`watch`:** same loader; requires `WatchModeConfig`. Runs **`internal/watchrun`** until SIGINT/SIGTERM: sleep (`interval_seconds` + optional jitter), optional per-row price strategy, then **`usecase.SetBids`** (same reconcile as one-shot). Global **`--dry-run`** applies each tick.
+- **`watch`:** same loader; requires `WatchModeConfig`. Runs **`internal/watchrun`** until SIGINT/SIGTERM: sleep (`interval_seconds` + optional jitter), optional per-row price strategy, then **`usecase.SetBids`** (same reconcile as one-shot). Global **`--dry-run`** applies each tick. **SIGHUP** reloads the **`--bid-config`** path and runs **`usecase.SetBids`** once for the new file; on failure the previous `WatchModeConfig` is retained (see README “Reloading the TOML”).
 - **Verbose:** debug logs; target mode also prints planner detail via `formatter` verbose helpers.
 
 ### Presentation (`internal/formatter/`)
@@ -145,7 +145,7 @@ Planning for target mode: need from rolling 24h average, distribution across bid
 
 ### Watch loop (`internal/watchrun/`)
 
-Optional **explicit-bids** automation: **`ResolveCooldowns`** each tick (order book + settings + bid history), **`served_floor_band`** strategy adjusts selected rows’ desired prices toward the served-stack undercut clamped to per-row min/max, then **`usecase.SetBids`**. Not a daemon inside `bidrunner`; it is a separate command and package so CLI and cron-style wrappers stay thin.
+Optional **explicit-bids** automation: **`ResolveCooldowns`** each tick (order book + settings + bid history), **`served_floor_band`** strategy adjusts selected rows’ desired prices toward the served-stack undercut clamped to per-row min/max, then **`usecase.SetBids`**. A goroutine forwards **SIGHUP** into the main loop so reload can interrupt sleep or initial delay; reload uses **`cfg.LoadConfig`** plus a full **`SetBids`** pass before swapping in-memory config. Not a daemon inside `bidrunner`; it is a separate command and package so CLI and cron-style wrappers stay thin.
 
 ### Hashvalue (`internal/hv/` + use case)
 

@@ -97,6 +97,19 @@ Use the exact header `[[bids]]` (all lowercase) for every worker row. Mixed spel
 
 When **`[watch].enabled = true`**, the config is intended for **`hashbidder watch --bid-config FILE`**, which runs until you send **SIGINT** or **SIGTERM**. Between ticks it sleeps for **`interval_seconds`** plus a random **0…`jitter_seconds`**, then may adjust prices for rows that set **`watch_strategy`**, then calls the same reconcile path as **`set-bids`**.
 
+**Reloading the TOML without restarting (SIGHUP)**
+
+While watch mode is running, **SIGHUP** re-reads the same **`--bid-config`** file from disk, runs a **full** reconcile for the new desired state (so static price or row changes apply, not only automation from the next tick), then continues with the updated settings. A **SIGHUP** can also interrupt the initial delay or the sleep between ticks.
+
+If the reload cannot be applied—invalid TOML, wrong config shape, API/reconcile error, or **insufficient balance** on a live (non-**`--dry-run`**) run—the process **keeps the previous in-memory config** and logs a single error line: **`watch: SIGHUP reload kept previous settings unchanged`**, with **`path`** and a **`failure`** string describing what went wrong.
+
+Example:
+
+```sh
+kill -HUP "$(pidof hashbidder)"
+# or: kill -HUP <pid>
+```
+
 **Root `[watch]` keys**
 
 | Key | Required | Description |

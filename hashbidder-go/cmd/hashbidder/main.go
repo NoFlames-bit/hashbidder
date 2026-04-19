@@ -289,6 +289,9 @@ Requires --bid-config. Uses global --dry-run, -v, --log-file.`,
 		Long: `Run until SIGINT or SIGTERM: sleep between ticks, then re-read the order book and
 adjust per-row prices when watch_strategy is set, then reconcile (same engine as set-bids).
 
+Send SIGHUP to reload --bid-config from disk, reconcile to the new desired state, and continue
+without restarting (parse or reconcile errors keep the previous in-memory config).
+
 Requirements:
   • TOML must be explicit bids (no mode = "target-hashrate").
   • Root table [watch] with enabled = true (interval_seconds, optional jitter_seconds, initial_delay_seconds).
@@ -315,7 +318,7 @@ See README "Watch mode" and bids.watch.example.toml for all TOML keys.`,
 			defer stop()
 			c := braiins.NewClient(braiins.APIBase, braiinsKey(), httpClient())
 			slog.Info("watch: started", "config", bidConfig, "dry_run", dryRun)
-			return watchrun.Run(ctx, c, &wm, dryRun)
+			return watchrun.Run(ctx, c, bidConfig, &wm, dryRun)
 		},
 	}
 	watch.Flags().String("bid-config", "", "Path to TOML with [watch].enabled and explicit [[bids]]")
