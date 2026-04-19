@@ -76,20 +76,21 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 			continue
 		}
 		if wireSats(np) != wireSats(nextBids[i].Price) {
-			oldP := nextBids[i].Price
 			nextBids[i].Price = np
 			changed = true
-			slot := domain.EffectiveUpstream(wm.SetBids, wm.SetBids.Bids[i])
-			id := strings.TrimSpace(wm.SetBids.Bids[i].Identity)
-			if id == "" {
-				id = strings.TrimSpace(slot.Identity)
+			liveS := int64(ub.Price.To(domain.PH, domain.Day).Sats)
+			targetS := int64(np.To(domain.PH, domain.Day).Sats)
+			if liveS != targetS {
+				slot := domain.EffectiveUpstream(wm.SetBids, wm.SetBids.Bids[i])
+				id := strings.TrimSpace(wm.SetBids.Bids[i].Identity)
+				if id == "" {
+					id = strings.TrimSpace(slot.Identity)
+				}
+				if id == "" {
+					id = string(ub.ID)
+				}
+				priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s %d→%d sat/PH/day", id, liveS, targetS))
 			}
-			if id == "" {
-				id = string(ub.ID)
-			}
-			oldS := int64(oldP.To(domain.PH, domain.Day).Sats)
-			newS := int64(np.To(domain.PH, domain.Day).Sats)
-			priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s %d→%d sat/PH/day", id, oldS, newS))
 		}
 	}
 	if !changed {
