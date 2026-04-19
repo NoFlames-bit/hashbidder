@@ -3,6 +3,7 @@ package targethr
 import (
 	"errors"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/braiins"
@@ -161,5 +162,50 @@ func FindMarketPrice(orderbook braiins.OrderBook, tick domain.PriceTick) (domain
 		return domain.HashratePrice{}, errors.New("order book has no served bids; cannot pick a price")
 	}
 	aligned := tick.AlignDown(cheapest.Price)
+	return tick.AddOne(aligned)
+}
+
+// FindMarketPriceByServedDepth picks a competitive undercut like FindMarketPrice,
+// but the anchor tier is the cheapest served price such that the cumulative sum
+// of hr_matched_ph from the bottom of the served stack up to and including that
+// tier reaches floor. Isolated cheap tiers with little matched hashrate are
+// skipped until enough depth accumulates. If the whole book has less matched
+// hashrate than floor, the anchor is the highest-priced served tier (most
+// conservative).
+func FindMarketPriceByServedDepth(orderbook braiins.OrderBook, tick domain.PriceTick, floor domain.Hashrate) (domain.HashratePrice, error) {
+	type served struct {
+		price   domain.HashratePrice
+		matched domain.Hashrate
+	}
+	var items []served
+	for i := range orderbook.Bids {
+		b := &orderbook.Bids[i]
+		if b.HrMatchedPH.Value.IsPositive() {
+			items = append(items, served{price: b.Price, matched: b.HrMatchedPH})
+		}
+	}
+	if len(items) == 0 {
+		return domain.HashratePrice{}, errors.New("order book has no served bids; cannot pick a price")
+	}
+	sort.SliceStable(items, func(i, j int) bool {
+		if items[i].price.Sats != items[j].price.Sats {
+			return items[i].price.Sats < items[j].price.Sats
+		}
+		return items[i].matched.Cmp(items[j].matched) < 0
+	})
+	zero, err := domain.NewHashrate(decimal.Zero, domain.PH, domain.Second)
+	if err != nil {
+		return domain.HashratePrice{}, err
+	}
+	cum := zero
+	var anchor domain.HashratePrice
+	for _, it := range items {
+		cum = cum.Add(it.matched)
+		anchor = it.price
+		if cum.GreaterEq(floor) {
+			break
+		}
+	}
+	aligned := tick.AlignDown(anchor)
 	return tick.AddOne(aligned)
 }

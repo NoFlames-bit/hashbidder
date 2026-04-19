@@ -25,9 +25,10 @@ import (
 )
 
 var (
-	verbose bool
-	logFile string
-	dryRun  bool
+	verbose       bool
+	logFile       string
+	dryRun        bool
+	logFileWriter *os.File // non-nil when --log-file is set; closed from main via defer
 )
 
 func setupLogging() {
@@ -46,8 +47,16 @@ func setupLogging() {
 		fmt.Fprintf(os.Stderr, "cannot open log file: %v\n", err)
 		os.Exit(1)
 	}
+	logFileWriter = f
 	file := slog.NewTextHandler(f, opts)
 	slog.SetDefault(slog.New(&teeHandler{stderr: std, file: file}))
+}
+
+func closeLogFile() {
+	if logFileWriter != nil {
+		_ = logFileWriter.Close()
+		logFileWriter = nil
+	}
 }
 
 func logInvocation() {
@@ -295,7 +304,7 @@ without restarting (parse or reconcile errors keep the previous in-memory config
 Requirements:
   • TOML must be explicit bids (no mode = "target-hashrate").
   • Root table [watch] with enabled = true (interval_seconds, optional jitter_seconds, initial_delay_seconds).
-  • At least one [[bids]] row with watch_strategy (e.g. served_floor_band) and price_min / price_max sat/PH/day.
+  • At least one [[bids]] row with watch_strategy (e.g. served_floor_band, served_depth_band) and price_min / price_max sat/PH/day.
 
 Optional rows omit watch_strategy — they keep the static price from the file.
 
@@ -329,8 +338,11 @@ See README "Watch mode" and bids.watch.example.toml for all TOML keys.`,
 }
 
 func main() {
+	defer closeLogFile()
 	if err := rootCmd().Execute(); err != nil {
 		fmt.Fprintln(os.Stderr, err.Error())
+		// os.Exit skips defers; close the log file here when we opened one.
+		closeLogFile()
 		os.Exit(1)
 	}
 }

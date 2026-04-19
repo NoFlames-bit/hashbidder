@@ -83,3 +83,55 @@ func TestApplyServedFloorBand_noServedBook(t *testing.T) {
 		t.Fatalf("expected noop %+v changed=%v", np, changed)
 	}
 }
+
+func obBid(priceSat int64, matchedPH string) braiins.BidItem {
+	hm, err := domain.NewHashrate(decimal.RequireFromString(matchedPH), domain.PH, domain.Second)
+	if err != nil {
+		panic(err)
+	}
+	sl, _ := domain.NewHashrate(decimal.NewFromInt(10), domain.PH, domain.Second)
+	per, _ := domain.NewHashrate(decimal.NewFromInt(1), domain.EH, domain.Day)
+	pr, err := domain.NewHashratePrice(domain.Sats(priceSat), per)
+	if err != nil {
+		panic(err)
+	}
+	return braiins.BidItem{Price: pr, HrMatchedPH: hm, SpeedLimitPH: sl}
+}
+
+func ehDayPriceSat(sats int64) domain.HashratePrice {
+	per, _ := domain.NewHashrate(decimal.NewFromInt(1), domain.EH, domain.Day)
+	p, err := domain.NewHashratePrice(domain.Sats(sats), per)
+	if err != nil {
+		panic(err)
+	}
+	return p
+}
+
+func TestApplyServedDepthBand_skipsThinCheapest(t *testing.T) {
+	floor, _ := domain.NewHashrate(decimal.NewFromInt(4), domain.PH, domain.Second)
+	rule := cfg.BidWatchRule{
+		Strategy:             cfg.StrategyServedDepthBand,
+		MinPrice:             ehDayPriceSat(400_000),
+		MaxPrice:             ehDayPriceSat(1_000_000),
+		MaxTicksPerStep:      10,
+		ServedLiquidityFloor: floor,
+	}
+	tick := mustTick(1000)
+	live := ehDayPriceSat(750_000)
+	book := braiins.OrderBook{Bids: []braiins.BidItem{
+		obBid(700_000, "2"),
+		obBid(800_000, "3"),
+		obBid(900_000, "1"),
+	}}
+	np, changed, err := ApplyServedDepthBand(rule, tick, book, live, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !changed {
+		t.Fatal("expected price move")
+	}
+	// stepTowardEH is capped by max_ticks_per_step (10) on the EH/day wire grid (tick 1000).
+	if want := int64(750_000 + 10*1000); int64(np.Sats) != want {
+		t.Fatalf("got sats %d want %d", np.Sats, want)
+	}
+}

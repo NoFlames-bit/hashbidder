@@ -41,13 +41,14 @@ type rawUpstream struct {
 }
 
 type rawBid struct {
-	PriceSatPerPHDay    any     `toml:"price_sat_per_ph_day"`
-	SpeedLimitPHS       any     `toml:"speed_limit_ph_s"`
-	Identity            string  `toml:"identity"`
-	WatchStrategy       *string `toml:"watch_strategy"`
-	PriceMinSatPerPHDay any     `toml:"price_min_sat_per_ph_day"`
-	PriceMaxSatPerPHDay any     `toml:"price_max_sat_per_ph_day"`
-	MaxTicksPerStep     any     `toml:"max_ticks_per_step"`
+	PriceSatPerPHDay              any     `toml:"price_sat_per_ph_day"`
+	SpeedLimitPHS                 any     `toml:"speed_limit_ph_s"`
+	Identity                      string  `toml:"identity"`
+	WatchStrategy                 *string `toml:"watch_strategy"`
+	PriceMinSatPerPHDay           any     `toml:"price_min_sat_per_ph_day"`
+	PriceMaxSatPerPHDay           any     `toml:"price_max_sat_per_ph_day"`
+	MaxTicksPerStep               any     `toml:"max_ticks_per_step"`
+	MarketServedLiquidityFloorPHS any     `toml:"market_served_liquidity_floor_ph"`
 }
 
 type rawFile struct {
@@ -121,6 +122,9 @@ func LoadConfig(path string) (any, error) {
 	if err != nil {
 		return nil, err
 	}
+	if defAmt < 0 {
+		return nil, fmt.Errorf("default_amount_sat must be non-negative (got %d)", defAmt)
+	}
 	if data.Upstream.URL == "" {
 		return nil, fmt.Errorf("missing required upstream field: url")
 	}
@@ -185,6 +189,9 @@ func LoadConfig(path string) (any, error) {
 		if priceInt == 0 {
 			return nil, fmt.Errorf("bid %d: missing required field: price_sat_per_ph_day", i)
 		}
+		if priceInt < 0 {
+			return nil, fmt.Errorf("bid %d: price_sat_per_ph_day must be non-negative (got %d)", i, priceInt)
+		}
 		if bd.SpeedLimitPHS == nil {
 			return nil, fmt.Errorf("bid %d: missing required field: speed_limit_ph_s", i)
 		}
@@ -195,7 +202,10 @@ func LoadConfig(path string) (any, error) {
 		if !spd.IsPositive() {
 			return nil, fmt.Errorf("bid %d: speed_limit_ph_s must be positive", i)
 		}
-		price, _ := domain.NewHashratePrice(domain.Sats(priceInt), mustHR(decimal.NewFromInt(1), domain.PH, domain.Day))
+		price, err := domain.NewHashratePrice(domain.Sats(priceInt), mustHR(decimal.NewFromInt(1), domain.PH, domain.Day))
+		if err != nil {
+			return nil, fmt.Errorf("bid %d: price_sat_per_ph_day: %w", i, err)
+		}
 		slim, err := domain.NewHashrate(spd, domain.PH, domain.Second)
 		if err != nil {
 			return nil, err

@@ -61,6 +61,8 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 		switch rule.Strategy {
 		case cfg.StrategyServedFloorBand:
 			np, ok, serr = ApplyServedFloorBand(rule, settings.PriceTick, book, ub.Price, cd.PriceCooldown)
+		case cfg.StrategyServedDepthBand:
+			np, ok, serr = ApplyServedDepthBand(rule, settings.PriceTick, book, ub.Price, cd.PriceCooldown)
 		default:
 			continue
 		}

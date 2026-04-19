@@ -1,0 +1,30 @@
+# Example: one stratum URL, several workers (separate Braiins orders).
+#
+# Omit [upstream].identity and set identity= on each [[bids]] so each row
+# matches dest_upstream.identity from the API. Live bids on this URL whose
+# identities are not listed here are left unchanged (incremental workers).
+#
+# See README.md: "One stratum URL, multiple workers" and
+# "How set-bids reconciles open bids (operating model)".
+#
+# Use the header [[bids]] (lowercase) for every block; mixed-case headers are
+# normalized on load but are easy to get wrong by hand.
+#
+# This file is plain explicit bids (no [watch] section). For timer-driven
+# repricing, start from bids.watch.example.toml and keep per-row identity= as
+# shown here.
+
+default_amount_sat = 44000
+
+[upstream]
+url = "stratum+tcp://YOUR_GATEWAY:23334"
+
+[[bids]]
+identity = "YOUR_PAYOUT_ADDRESS.worker1"
+price_sat_per_ph_day = 47000
+speed_limit_ph_s = 1.0
+
+[[bids]]
+identity = "YOUR_PAYOUT_ADDRESS.worker2"
+price_sat_per_ph_day = 50000
+speed_limit_ph_s = 1.0

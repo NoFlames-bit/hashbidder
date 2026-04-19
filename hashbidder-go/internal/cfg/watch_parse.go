@@ -79,11 +79,35 @@ func parseWatchMode(data *rawFile, setBids domain.SetBidsConfig, bids []domain.B
 			}
 			maxTicks = int(mt)
 		}
+		var liqFloor domain.Hashrate
+		if rb.MarketServedLiquidityFloorPHS != nil {
+			if sk != StrategyServedDepthBand {
+				return nil, fmt.Errorf("bid %d: market_served_liquidity_floor_ph is only for watch_strategy %q", i, StrategyServedDepthBand)
+			}
+			flDec, err := anyToDecimal(rb.MarketServedLiquidityFloorPHS)
+			if err != nil {
+				return nil, fmt.Errorf("bid %d: market_served_liquidity_floor_ph: %w", i, err)
+			}
+			if !flDec.IsPositive() {
+				return nil, fmt.Errorf("bid %d: market_served_liquidity_floor_ph must be positive", i)
+			}
+			liqFloor, err = domain.NewHashrate(flDec, domain.PH, domain.Second)
+			if err != nil {
+				return nil, fmt.Errorf("bid %d: market_served_liquidity_floor_ph: %w", i, err)
+			}
+		} else if sk == StrategyServedDepthBand {
+			var err error
+			liqFloor, err = domain.NewHashrate(decimal.NewFromInt(500), domain.PH, domain.Second)
+			if err != nil {
+				return nil, err
+			}
+		}
 		rules[i] = BidWatchRule{
-			Strategy:        sk,
-			MinPrice:        minP,
-			MaxPrice:        maxP,
-			MaxTicksPerStep: maxTicks,
+			Strategy:             sk,
+			MinPrice:             minP,
+			MaxPrice:             maxP,
+			MaxTicksPerStep:      maxTicks,
+			ServedLiquidityFloor: liqFloor,
 		}
 	}
 	if !anyStrategy {
@@ -108,7 +132,9 @@ func parseStrategyKind(s *string) (StrategyKind, error) {
 	switch strings.ToLower(strings.TrimSpace(*s)) {
 	case string(StrategyServedFloorBand):
 		return StrategyServedFloorBand, nil
+	case string(StrategyServedDepthBand):
+		return StrategyServedDepthBand, nil
 	default:
-		return "", fmt.Errorf("unknown watch_strategy %q (supported: %q)", *s, StrategyServedFloorBand)
+		return "", fmt.Errorf("unknown watch_strategy %q (supported: %q, %q)", *s, StrategyServedFloorBand, StrategyServedDepthBand)
 	}
 }

@@ -160,6 +160,50 @@ func TestFindMarketPrice(t *testing.T) {
 	}
 }
 
+func TestFindMarketPriceByServedDepth_floorOneMatchesCheapest(t *testing.T) {
+	book := braiins.OrderBook{
+		Bids: []braiins.BidItem{
+			bidItem(1000, "0", "10"),
+			bidItem(500, "0", "10"),
+			bidItem(800, "3", "10"),
+			bidItem(700, "2", "10"),
+			bidItem(900, "1", "10"),
+		},
+	}
+	pr, err := FindMarketPriceByServedDepth(book, mustTick100(), phS("1"))
+	if err != nil || int64(pr.Sats) != 800 {
+		t.Fatalf("got %v err=%v", pr.Sats, err)
+	}
+}
+
+func TestFindMarketPriceByServedDepth_skipsThinCheapest(t *testing.T) {
+	book := braiins.OrderBook{
+		Bids: []braiins.BidItem{
+			bidItem(700, "2", "10"),
+			bidItem(800, "3", "10"),
+			bidItem(900, "1", "10"),
+		},
+	}
+	// Need cum >= 4 → anchor 800 → undercut same as targeting 800 tier.
+	pr, err := FindMarketPriceByServedDepth(book, mustTick100(), phS("4"))
+	if err != nil || int64(pr.Sats) != 900 {
+		t.Fatalf("got %v err=%v", pr.Sats, err)
+	}
+}
+
+func TestFindMarketPriceByServedDepth_insufficientDepthUsesTopTier(t *testing.T) {
+	book := braiins.OrderBook{
+		Bids: []braiins.BidItem{
+			bidItem(700, "2", "10"),
+			bidItem(900, "1", "10"),
+		},
+	}
+	pr, err := FindMarketPriceByServedDepth(book, mustTick100(), phS("100"))
+	if err != nil || int64(pr.Sats) != 1000 {
+		t.Fatalf("got %v err=%v", pr.Sats, err)
+	}
+}
+
 func TestResolveCooldowns_tier1SkipsHistory(t *testing.T) {
 	tick, _ := domain.NewPriceTick(1000)
 	settings := braiins.MarketSettings{

@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/NoFlames-bit/hashbidder/hashbidder-go/internal/domain"
+
+	"github.com/shopspring/decimal"
 )
 
 func writeCfg(t *testing.T, dir, name, content string) string {
@@ -281,6 +283,21 @@ default_amount_sat = 100000
 url = "stratum+tcp://pool.example.com:3333"
 identity = "worker1"
 `, "invalid mode"},
+		{"negative_default_amount", `
+default_amount_sat = -50000
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "worker1"
+`, "default_amount_sat must be non-negative"},
+		{"negative_bid_price", `
+default_amount_sat = 100000
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "worker1"
+[[bids]]
+price_sat_per_ph_day = -100
+speed_limit_ph_s = 5.0
+`, "price_sat_per_ph_day must be non-negative"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -397,6 +414,70 @@ max_ticks_per_step = 2
 	}
 	if len(wm.Rules) != 1 || wm.Rules[0].Strategy != StrategyServedFloorBand || wm.Rules[0].MaxTicksPerStep != 2 {
 		t.Fatalf("rules %+v", wm.Rules)
+	}
+}
+
+func TestLoadConfig_WatchServedDepthBandDefaultFloor(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "depth.toml", `
+default_amount_sat = 100000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "w1"
+
+[watch]
+enabled = true
+interval_seconds = 60
+
+[[bids]]
+price_sat_per_ph_day = 500000
+speed_limit_ph_s = 5.0
+watch_strategy = "served_depth_band"
+price_min_sat_per_ph_day = 400000
+price_max_sat_per_ph_day = 600000
+`)
+	any, err := LoadConfig(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wm, ok := any.(WatchModeConfig)
+	if !ok {
+		t.Fatalf("got %T", any)
+	}
+	if len(wm.Rules) != 1 || wm.Rules[0].Strategy != StrategyServedDepthBand {
+		t.Fatalf("rules %+v", wm.Rules)
+	}
+	want, _ := domain.NewHashrate(decimal.NewFromInt(500), domain.PH, domain.Second)
+	if wm.Rules[0].ServedLiquidityFloor.Cmp(want) != 0 {
+		t.Fatalf("default floor got %+v want %+v", wm.Rules[0].ServedLiquidityFloor, want)
+	}
+}
+
+func TestLoadConfig_WatchLiquidityFloorOnlyForDepth(t *testing.T) {
+	dir := t.TempDir()
+	p := writeCfg(t, dir, "badfloor.toml", `
+default_amount_sat = 100000
+
+[upstream]
+url = "stratum+tcp://pool.example.com:3333"
+identity = "w1"
+
+[watch]
+enabled = true
+interval_seconds = 60
+
+[[bids]]
+price_sat_per_ph_day = 500000
+speed_limit_ph_s = 5.0
+watch_strategy = "served_floor_band"
+price_min_sat_per_ph_day = 400000
+price_max_sat_per_ph_day = 600000
+market_served_liquidity_floor_ph = 100
+`)
+	_, err := LoadConfig(p)
+	if err == nil || !strings.Contains(err.Error(), "market_served_liquidity_floor_ph") {
+		t.Fatalf("err=%v", err)
 	}
 }
 

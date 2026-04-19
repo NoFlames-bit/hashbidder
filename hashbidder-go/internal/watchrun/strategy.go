@@ -118,3 +118,48 @@ func ApplyServedFloorBand(
 	}
 	return out, true, nil
 }
+
+// ApplyServedDepthBand matches ApplyServedFloorBand except the served anchor
+// comes from targethr.FindMarketPriceByServedDepth (cumulative hr_matched_ph
+// threshold on the book) instead of the single cheapest served bid.
+func ApplyServedDepthBand(
+	rule cfg.BidWatchRule,
+	tick domain.PriceTick,
+	book braiins.OrderBook,
+	live domain.HashratePrice,
+	priceCooldown bool,
+) (domain.HashratePrice, bool, error) {
+	if rule.Strategy != cfg.StrategyServedDepthBand {
+		return live, false, nil
+	}
+	servedUndercut, err := targethr.FindMarketPriceByServedDepth(book, tick, rule.ServedLiquidityFloor)
+	if err != nil {
+		return live, false, nil
+	}
+	live = tick.AlignDown(live)
+	minW := wireSats(rule.MinPrice)
+	maxW := wireSats(rule.MaxPrice)
+	servW := wireSats(servedUndercut)
+	anchorW := clampInt64(servW, minW, maxW)
+	anchor, err := ehDayFromWire(anchorW)
+	if err != nil {
+		return domain.HashratePrice{}, false, err
+	}
+	allowDown := !priceCooldown
+	next, err := stepTowardEH(live, anchor, tick, rule.MaxTicksPerStep, allowDown)
+	if err != nil {
+		return domain.HashratePrice{}, false, err
+	}
+	if wireSats(next) == wireSats(live) {
+		return live, false, nil
+	}
+	nw := clampInt64(wireSats(next), minW, maxW)
+	out, err := ehDayFromWire(nw)
+	if err != nil {
+		return domain.HashratePrice{}, false, err
+	}
+	if wireSats(out) == wireSats(live) {
+		return live, false, nil
+	}
+	return out, true, nil
+}

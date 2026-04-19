@@ -28,6 +28,10 @@ type StrategyKind string
 const (
 	StrategyNone            StrategyKind = ""
 	StrategyServedFloorBand StrategyKind = "served_floor_band"
+	// StrategyServedDepthBand undercuts the served book like served_floor_band,
+	// but the competitive tier is chosen only after cumulative hr_matched from
+	// the cheapest served levels reaches ServedLiquidityFloor (see TOML).
+	StrategyServedDepthBand StrategyKind = "served_depth_band"
 )
 
 // BidWatchRule holds optional automation for one config row (same index as SetBids.Bids).
@@ -39,4 +43,8 @@ type BidWatchRule struct {
 	// MaxTicksPerStep limits how many tick steps we move toward the goal per tick
 	// (reduces chase volatility and API churn).
 	MaxTicksPerStep int
+	// ServedLiquidityFloor is used by StrategyServedDepthBand: cumulative
+	// hr_matched_ph from the bottom of the served stack must reach this before
+	// we treat a price tier as the anchor (same units as order book hr_matched_ph).
+	ServedLiquidityFloor domain.Hashrate
 }
