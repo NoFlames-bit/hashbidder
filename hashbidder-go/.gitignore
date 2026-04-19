@@ -5,6 +5,8 @@ coverage.out
 .env
 bids.*toml
 nohup.out
+../.cursor/
+../.vscode/
 
 /.cursor/
 /ARCHITECTURE.md
