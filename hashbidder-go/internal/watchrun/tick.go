@@ -91,7 +91,7 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 				if id == "" {
 					id = string(ub.ID)
 				}
-				priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s watch_strategy=%s %d→%d sat/PH/day", id, rule.Strategy, liveS, targetS))
+				priceAdjParts = append(priceAdjParts, fmt.Sprintf("%s strategy=%s %d→%d sat/PH/day", shortenIdentityForLog(id), rule.Strategy, liveS, targetS))
 			}
 		}
 	}
@@ -108,10 +108,32 @@ func OneTick(ctx context.Context, client braiins.HashpowerClient, wm *cfg.WatchM
 	if err != nil {
 		return err
 	}
-	msg := "watch tick: reconciled"
-	if len(priceAdjParts) > 0 {
-		msg += " (" + strings.Join(priceAdjParts, "; ") + ")"
+	if len(priceAdjParts) == 0 {
+		slog.Info("watch tick: reconciled", "dry_run", dryRun)
+	} else {
+		for _, part := range priceAdjParts {
+			slog.Info("watch tick: reconciled", "order", part, "dry_run", dryRun)
+		}
 	}
-	slog.Info(msg, "dry_run", dryRun)
 	return nil
+}
+
+// shortenIdentityForLog abbreviates a payout address in log lines while keeping
+// the stratum worker suffix (the substring from the last '.' onward) unchanged.
+func shortenIdentityForLog(id string) string {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return id
+	}
+	dot := strings.LastIndex(id, ".")
+	var addr, suffix string
+	if dot > 0 && dot < len(id)-1 {
+		addr, suffix = id[:dot], id[dot:]
+	} else {
+		addr, suffix = id, ""
+	}
+	if len(addr) <= 16 {
+		return id
+	}
+	return addr[:6] + "..." + addr[len(addr)-6:] + suffix
 }
